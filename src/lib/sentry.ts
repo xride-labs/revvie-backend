@@ -2,6 +2,7 @@ import * as Sentry from '@sentry/node'
 import type { Application } from 'express'
 
 export function initSentry(): void {
+  if (process.env.NODE_ENV !== 'production') return
   const dsn = process.env.SENTRY_DSN
   if (!dsn) return
 
@@ -22,6 +23,7 @@ export function initSentry(): void {
 }
 
 export function setupSentryErrorHandler(app: Application): void {
+  if (process.env.NODE_ENV !== 'production') return
   const dsn = process.env.SENTRY_DSN
   if (!dsn) return
   Sentry.setupExpressErrorHandler(app)

@@ -211,7 +211,21 @@ export async function updateRideStatuses(): Promise<{
     // This could be based on scheduledAt + duration
 
     if (updated > 0) {
-      console.log(`[Ride Status] Updated ${updated} ride statuses`);
+      console.log(`[Ride Status] Started ${updated} rides`);
+    }
+
+    // auto complete rides
+    if (startedRides.count > 0) {
+      const completedRides = await prisma.ride.updateMany({
+        where: {
+          status: "IN_PROGRESS",
+          scheduledAt: { lt: now },
+        },
+        data: {
+          status: "COMPLETED",
+        },
+      });
+      updated += completedRides.count;
     }
 
     return { updated, errors };

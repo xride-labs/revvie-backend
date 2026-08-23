@@ -2539,7 +2539,8 @@ router.post(
 
 /**
  * GET /clubs/:id/marketplace
- * Member-only: returns active listings from club members, newest first.
+ * Member-only: the club's own market — listings explicitly posted to this club
+ * (both PUBLIC and CLUB_ONLY; members see everything), newest first.
  */
 router.get(
   "/:id/marketplace",
@@ -2557,13 +2558,10 @@ router.get(
     const { page, limit, category } = req.query as any;
     const skip = (page - 1) * limit;
 
-    const members = await prisma.clubMember.findMany({
-      where: { clubId },
-      select: { userId: true },
-    });
-    const memberIds = members.map((m) => m.userId);
-
-    const where: any = { sellerId: { in: memberIds }, status: "ACTIVE" };
+    // Listings posted INTO this club's market. visibility (PUBLIC | CLUB_ONLY)
+    // only affects whether they ALSO appear in the global marketplace — members
+    // of the club see both here.
+    const where: any = { clubId, status: "ACTIVE" };
     if (category) where.category = category;
 
     const [listings, total] = await Promise.all([

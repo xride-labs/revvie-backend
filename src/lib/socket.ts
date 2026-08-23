@@ -199,6 +199,82 @@ export function getIO(): Server | null {
   return ioInstance;
 }
 
+export interface BroadcastRiderLocationInput {
+  rideId: string;
+  userId: string;
+  name: string;
+  avatar?: string | null;
+  latitude: number;
+  longitude: number;
+  heading?: number | null;
+  speed?: number | null;
+  altitude?: number | null;
+  accuracy?: number | null;
+  isMoving?: boolean;
+  timestamp?: string;
+}
+
+export async function broadcastRiderLocation(
+  input: BroadcastRiderLocationInput,
+): Promise<boolean> {
+  const {
+    rideId,
+    userId,
+    name,
+    avatar,
+    latitude,
+    longitude,
+    heading,
+    speed,
+    altitude,
+    accuracy,
+    isMoving,
+    timestamp,
+  } = input;
+
+  if (isRideCompleted(rideId)) return false;
+
+  const now = timestamp || new Date().toISOString();
+  const riderPayload = {
+    userId,
+    name,
+    userName: name,
+    avatar,
+    latitude,
+    longitude,
+    lat: latitude,
+    lon: longitude,
+    heading: heading ?? null,
+    speed: speed ?? null,
+    altitude: altitude ?? null,
+    accuracy: accuracy ?? null,
+    isMoving: isMoving ?? false,
+    timestamp: now,
+    updatedAt: now,
+  };
+
+  // Cache position in memory / Redis
+  await cacheRiderLocation(rideId, userId, {
+    userId,
+    name,
+    avatar,
+    latitude,
+    longitude,
+    heading: heading ?? null,
+    speed: speed ?? null,
+    isMoving: isMoving ?? false,
+    updatedAt: now,
+  }).catch(() => {});
+
+  const io = getIO();
+  if (io) {
+    io.to(`ride:${rideId}`).emit("rider_location_updated", riderPayload);
+    io.to(`ride:${rideId}`).emit("participant-location", riderPayload);
+  }
+
+  return true;
+}
+
 /**
  * Real-time + push fanout for a message sent over the REST fallback
  * (chat.controller). The socket handler does this inline for socket-sent

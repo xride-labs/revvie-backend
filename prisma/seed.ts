@@ -22,7 +22,7 @@ const adapter = new PrismaPg({ connectionString: process.env.DATABASE_URL });
 const prisma = new PrismaClient({ adapter });
 
 const IS_PROD = process.env.NODE_ENV === "production";
-const PRIMARY_ADMIN_EMAIL = "admin@revvie.com";
+const PRIMARY_ADMIN_EMAIL = "admin@revvie.in";
 const GOOGLE_ADMIN_EMAIL = "krithikm923@gmail.com";
 
 // ──────────────────────────────────────────────────────────────────

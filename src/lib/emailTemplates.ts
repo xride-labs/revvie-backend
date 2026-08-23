@@ -683,3 +683,37 @@ export function buildAlertTemplate(params: {
     tags: ["alert"],
   };
 }
+
+export function buildMagicLinkTemplate(params: {
+  name?: string | null;
+  magicLinkUrl: string;
+}): EmailTemplate {
+  const firstName = getFirstName(params.name);
+  const greeting = firstName ? `Hi ${escapeHtml(firstName)},` : "Welcome back,";
+
+  const html = buildHtml({
+    preheader: "Your magic link to sign in to Revvie.",
+    heading: "Sign in to Revvie",
+    greeting,
+    intro: "Click the button below to instantly sign in to your account. This link is valid for 10 minutes and can only be used once.",
+    ctaLabel: "Sign In Instantly",
+    ctaUrl: params.magicLinkUrl,
+    outro: "If you didn't request this link, you can safely ignore this email.",
+  });
+
+  const text = buildText({
+    greeting,
+    heading: "Sign in to Revvie",
+    intro: "Click the link below to instantly sign in to your account. This link is valid for 10 minutes and can only be used once.",
+    ctaLabel: "Sign In Instantly",
+    ctaUrl: params.magicLinkUrl,
+    outro: "If you didn't request this link, you can safely ignore this email.",
+  });
+
+  return {
+    subject: "Sign in to Revvie",
+    html,
+    text,
+    tags: ["magic-link"],
+  };
+}

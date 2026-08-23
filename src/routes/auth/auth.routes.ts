@@ -493,6 +493,8 @@ router.patch(
       activityLevel,
       level,
       onboardingCompleted,
+      ghostModeEnabled,
+      socialLinks,
     } = req.body;
 
     const user = await prisma.user.update({
@@ -510,6 +512,8 @@ router.patch(
         ...(activityLevel !== undefined && { activityLevel }),
         ...(level !== undefined && { level }),
         ...(onboardingCompleted !== undefined && { onboardingCompleted }),
+        ...(ghostModeEnabled !== undefined && { ghostModeEnabled, ghostModeSince: ghostModeEnabled ? new Date() : null }),
+        ...(socialLinks !== undefined && { socialLinks }),
       },
       select: {
         id: true,

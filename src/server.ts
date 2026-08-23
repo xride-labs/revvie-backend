@@ -33,6 +33,8 @@ import {
   businessRoutes,
   adsRoutes,
   discountRoutes,
+  bulkRoutes,
+  catalogRoutes,
 } from "./routes/index.js";
 import {
   initializeScheduledJobs,
@@ -251,6 +253,8 @@ app.use("/api/public", publicRoutes);
 app.use("/api/business", businessRoutes);
 app.use("/api/ads", adsRoutes);
 app.use("/api/discounts", discountRoutes);
+app.use("/api/bulk", bulkRoutes);
+app.use("/api/catalog", catalogRoutes);
 
 // 404 handler
 app.use((req: Request, res: Response) => {

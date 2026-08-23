@@ -7,8 +7,10 @@ import {
 } from "../../middlewares/validation.js";
 import { z } from "zod";
 import { LocationService } from "../../services/location.service.js";
-import { ApiResponse } from "../../lib/utils/apiResponse.js";
-import { requirePro } from "../../lib/subscription.js";
+import { ApiResponse, ErrorCode } from "../../lib/utils/apiResponse.js";
+import { requirePro, isUserPro } from "../../lib/subscription.js";
+import { broadcastRiderLocation } from "../../lib/socket.js";
+import prisma from "../../lib/prisma.js";
 
 const router = Router();
 
@@ -107,14 +109,51 @@ const rideIdParamSchema = z.object({
  */
 router.post(
   "/",
-  requireLiveLocationPro,
   validateBody(updateLocationSchema),
   asyncHandler(async (req: Request, res: Response) => {
     const userId = (req as any).session?.user?.id;
+    const { isOnRide, rideId, ...rest } = req.body;
+
+    // Social friend-map live location sharing requires Revvie Pro,
+    // but active ride tracking telemetry is permitted for all ride participants.
+    if (!isOnRide || !rideId) {
+      const hasPro = await isUserPro(userId);
+      if (!hasPro) {
+        return ApiResponse.forbidden(
+          res,
+          "Live location sharing requires Revvie Pro. Upgrade to unlock this feature.",
+          ErrorCode.SUBSCRIPTION_REQUIRED,
+        );
+      }
+    }
+
     await LocationService.updateLocation({
       userId,
-      ...req.body,
+      isOnRide,
+      rideId,
+      ...rest,
     });
+
+    if (isOnRide && rideId) {
+      const user = await prisma.user.findUnique({
+        where: { id: userId },
+        select: { name: true, avatar: true },
+      });
+      await broadcastRiderLocation({
+        rideId,
+        userId,
+        name: user?.name || "Rider",
+        avatar: user?.avatar,
+        latitude: req.body.latitude,
+        longitude: req.body.longitude,
+        heading: req.body.heading,
+        speed: req.body.speed,
+        altitude: req.body.altitude,
+        accuracy: req.body.accuracy,
+        isMoving: req.body.isMoving,
+      });
+    }
+
     ApiResponse.success(res, null, "Location updated");
   }),
 );

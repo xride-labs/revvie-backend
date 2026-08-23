@@ -2243,9 +2243,29 @@ router.post(
 // ─── Bulk Approval Routes ─────────────────────────────────────────────────────
 // Single request handles N approvals — avoids N round trips from the UI.
 
+import { BulkActionSchema, processBulkAction } from "../../lib/bulkActions.js";
+
 const bulkIdsSchema = z.object({
   ids: z.array(z.string().min(1)).min(1).max(200),
 });
+
+// Unified bulk action endpoint
+router.post(
+  "/bulk/action",
+  requireAdmin,
+  asyncHandler(async (req: Request, res: Response) => {
+    const parsed = BulkActionSchema.safeParse(req.body);
+    if (!parsed.success) return ApiResponse.validationError(res, parsed.error);
+    
+    const session = (req as any).session;
+    const result = await processBulkAction(parsed.data, {
+      userId: session?.user?.id,
+      userRoles: session?.userRoles,
+    });
+    
+    ApiResponse.success(res, result, `Bulk action completed: ${result.processed} items processed`);
+  }),
+);
 
 router.post(
   "/bulk/clubs/verify",

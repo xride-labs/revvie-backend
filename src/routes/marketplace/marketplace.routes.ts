@@ -172,6 +172,10 @@ router.get(
         },
       ];
     }
+    // Club-only listings never surface in the global marketplace — they live
+    // exclusively inside their club's market. PUBLIC (incl. legacy rows that
+    // default to PUBLIC) show here as usual.
+    where.visibility = { not: "CLUB_ONLY" };
 
     const [listings, total] = await Promise.all([
       prisma.marketplaceListing.findMany({
@@ -535,7 +539,38 @@ router.post(
       allowBids,
       latitude,
       longitude,
+      clubId,
+      visibility,
     } = req.body;
+
+    // Club scoping: you can only post into a club's market if you're a member
+    // (or its owner). CLUB_ONLY visibility is meaningless without a club, so it
+    // collapses to PUBLIC when no clubId is supplied.
+    let effectiveClubId: string | null = null;
+    let effectiveVisibility: "PUBLIC" | "CLUB_ONLY" = "PUBLIC";
+    if (clubId) {
+      const [membership, club] = await Promise.all([
+        prisma.clubMember.findUnique({
+          where: { clubId_userId: { clubId, userId: session.user.id } },
+          select: { id: true },
+        }),
+        prisma.club.findUnique({
+          where: { id: clubId },
+          select: { id: true, ownerId: true },
+        }),
+      ]);
+      if (!club) {
+        return ApiResponse.notFound(res, "Club not found", ErrorCode.NOT_FOUND);
+      }
+      if (!membership && club.ownerId !== session.user.id) {
+        return ApiResponse.forbidden(
+          res,
+          "You must be a member of the club to list in its market",
+        );
+      }
+      effectiveClubId = clubId;
+      effectiveVisibility = visibility === "CLUB_ONLY" ? "CLUB_ONLY" : "PUBLIC";
+    }
 
     const listing = await prisma.marketplaceListing.create({
       data: {
@@ -554,6 +589,8 @@ router.post(
         latitude,
         longitude,
         sellerId: session.user.id,
+        clubId: effectiveClubId,
+        visibility: effectiveVisibility,
       },
       include: {
         seller: {

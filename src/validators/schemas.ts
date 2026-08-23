@@ -104,6 +104,8 @@ export const updateProfileSchema = z.object({
     .optional(),
   avatar: z.string().url("Invalid avatar URL").optional(),
   coverImage: z.string().url("Invalid cover image URL").optional(),
+  socialLinks: z.record(z.string().url("Invalid URL")).optional(),
+  ghostModeEnabled: z.boolean().optional(),
   interests: z.array(z.string()).optional(),
   activityLevel: z.enum(["Casual", "Regular", "Enthusiast", "Pro"]).optional(),
   level: z.number().int().min(0).max(100).optional(),
@@ -303,6 +305,12 @@ export const createListingSchema = z.object({
   allowBids: z.boolean().optional(),
   latitude: z.number().min(-90).max(90).optional(),
   longitude: z.number().min(-180).max(180).optional(),
+  // Club scoping: when posting inside a club's market, `clubId` links the
+  // listing to that club. `visibility` controls reach — CLUB_ONLY keeps it to
+  // members; PUBLIC also shows it in the global marketplace. CLUB_ONLY is only
+  // meaningful with a clubId (enforced in the route handler).
+  clubId: z.string().optional().nullable(),
+  visibility: z.enum(["PUBLIC", "CLUB_ONLY"]).optional().default("PUBLIC"),
 });
 
 export const updateListingSchema = createListingSchema.partial().extend({

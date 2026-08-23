@@ -26,7 +26,8 @@ import { sendRideJoinRequestEmail } from "../../lib/mailer.js";
 import { createNotification, notifyUsers } from "../../lib/notifications.js";
 import { ElevationService } from "../../services/elevation.service.js";
 import { computeRideSummary, deriveEffectiveDurationSec } from "../../services/ride-summary.service.js";
-import { markRideCompleted } from "../../lib/socket.js";
+import { markRideCompleted, broadcastRiderLocation } from "../../lib/socket.js";
+import { LocationService } from "../../services/location.service.js";
 import { requirePro } from "../../lib/subscription.js";
 import { rideToGpx } from "../../lib/gpx.js";
 import { awardBadgeByTitle, awardXp } from "../../lib/xp.js";
@@ -1818,6 +1819,259 @@ router.get(
       `attachment; filename="${filename}"`,
     );
     res.status(200).send(gpx);
+  }),
+);
+
+const rideTelemetrySchema = z.object({
+  latitude: z.number().min(-90).max(90),
+  longitude: z.number().min(-180).max(180),
+  altitude: z.number().optional().nullable(),
+  heading: z.number().min(0).max(360).optional().nullable(),
+  speed: z.number().min(0).optional().nullable(),
+  accuracy: z.number().min(0).optional().nullable(),
+  battery: z.number().min(0).max(100).optional().nullable(),
+  isMoving: z.boolean().optional(),
+  capturedAt: z.number().optional().nullable(),
+});
+
+const rideTelemetryBatchSchema = z.object({
+  pings: z.array(rideTelemetrySchema).min(1).max(200),
+});
+
+/**
+ * @swagger
+ * /api/rides/{id}/telemetry:
+ *   post:
+ *     summary: Ingest real-time GPS telemetry from active ride participant
+ *     tags: [Rides]
+ *     security:
+ *       - cookieAuth: []
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [latitude, longitude]
+ *             properties:
+ *               latitude:
+ *                 type: number
+ *               longitude:
+ *                 type: number
+ *               altitude:
+ *                 type: number
+ *               heading:
+ *                 type: number
+ *               speed:
+ *                 type: number
+ *               accuracy:
+ *                 type: number
+ *               battery:
+ *                 type: number
+ *               isMoving:
+ *                 type: boolean
+ *               capturedAt:
+ *                 type: number
+ *     responses:
+ *       200:
+ *         description: Telemetry recorded and broadcasted
+ */
+router.post(
+  "/:id/telemetry",
+  validateParams(idParamSchema),
+  validateBody(rideTelemetrySchema),
+  asyncHandler(async (req: Request, res: Response) => {
+    const session = (req as any).session;
+    const userId = session?.user?.id;
+    const { id } = req.params;
+
+    const [ride, participant, user] = await Promise.all([
+      prisma.ride.findUnique({
+        where: { id },
+        select: { id: true, creatorId: true, status: true },
+      }),
+      prisma.rideParticipant.findFirst({
+        where: {
+          rideId: id,
+          userId,
+          status: { in: ["ACCEPTED", "COMPLETED"] },
+        },
+      }),
+      prisma.user.findUnique({
+        where: { id: userId },
+        select: { name: true, avatar: true },
+      }),
+    ]);
+
+    if (!ride) {
+      return ApiResponse.notFound(res, "Ride not found");
+    }
+
+    const isCreator = ride.creatorId === userId;
+    if (!isCreator && !participant) {
+      return ApiResponse.forbidden(
+        res,
+        "Only confirmed ride participants can send telemetry",
+      );
+    }
+
+    const {
+      latitude,
+      longitude,
+      altitude,
+      heading,
+      speed,
+      accuracy,
+      battery,
+      isMoving,
+      capturedAt,
+    } = req.body;
+
+    await LocationService.updateLocation({
+      userId,
+      latitude,
+      longitude,
+      altitude: altitude ?? undefined,
+      heading: heading ?? undefined,
+      speed: speed ?? undefined,
+      accuracy: accuracy ?? undefined,
+      battery: battery ?? undefined,
+      isMoving: isMoving ?? false,
+      isOnRide: true,
+      rideId: id,
+    });
+
+    await broadcastRiderLocation({
+      rideId: id,
+      userId,
+      name: user?.name || "Rider",
+      avatar: user?.avatar,
+      latitude,
+      longitude,
+      heading,
+      speed,
+      altitude,
+      accuracy,
+      isMoving,
+      timestamp: capturedAt ? new Date(capturedAt).toISOString() : undefined,
+    });
+
+    ApiResponse.success(res, { success: true });
+  }),
+);
+
+/**
+ * @swagger
+ * /api/rides/{id}/telemetry/batch:
+ *   post:
+ *     summary: Ingest queued offline GPS telemetry pings from active ride participant
+ *     tags: [Rides]
+ *     security:
+ *       - cookieAuth: []
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [pings]
+ *             properties:
+ *               pings:
+ *                 type: array
+ *     responses:
+ *       200:
+ *         description: Batch telemetry processed
+ */
+router.post(
+  "/:id/telemetry/batch",
+  validateParams(idParamSchema),
+  validateBody(rideTelemetryBatchSchema),
+  asyncHandler(async (req: Request, res: Response) => {
+    const session = (req as any).session;
+    const userId = session?.user?.id;
+    const { id } = req.params;
+    const { pings } = req.body;
+
+    const [ride, participant, user] = await Promise.all([
+      prisma.ride.findUnique({
+        where: { id },
+        select: { id: true, creatorId: true, status: true },
+      }),
+      prisma.rideParticipant.findFirst({
+        where: {
+          rideId: id,
+          userId,
+          status: { in: ["ACCEPTED", "COMPLETED"] },
+        },
+      }),
+      prisma.user.findUnique({
+        where: { id: userId },
+        select: { name: true, avatar: true },
+      }),
+    ]);
+
+    if (!ride) {
+      return ApiResponse.notFound(res, "Ride not found");
+    }
+
+    const isCreator = ride.creatorId === userId;
+    if (!isCreator && !participant) {
+      return ApiResponse.forbidden(
+        res,
+        "Only confirmed ride participants can send telemetry",
+      );
+    }
+
+    const latestPing = pings[pings.length - 1];
+
+    if (latestPing) {
+      await LocationService.updateLocation({
+        userId,
+        latitude: latestPing.latitude,
+        longitude: latestPing.longitude,
+        altitude: latestPing.altitude ?? undefined,
+        heading: latestPing.heading ?? undefined,
+        speed: latestPing.speed ?? undefined,
+        accuracy: latestPing.accuracy ?? undefined,
+        battery: latestPing.battery ?? undefined,
+        isMoving: latestPing.isMoving ?? false,
+        isOnRide: true,
+        rideId: id,
+      });
+
+      await broadcastRiderLocation({
+        rideId: id,
+        userId,
+        name: user?.name || "Rider",
+        avatar: user?.avatar,
+        latitude: latestPing.latitude,
+        longitude: latestPing.longitude,
+        heading: latestPing.heading,
+        speed: latestPing.speed,
+        altitude: latestPing.altitude,
+        accuracy: latestPing.accuracy,
+        isMoving: latestPing.isMoving,
+        timestamp: latestPing.capturedAt
+          ? new Date(latestPing.capturedAt).toISOString()
+          : undefined,
+      });
+    }
+
+    ApiResponse.success(res, { processed: pings.length });
   }),
 );
 

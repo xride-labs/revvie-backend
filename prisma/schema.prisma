@@ -62,6 +62,7 @@ model User {
 
   // Profile fields
   bio                 String?
+  socialLinks         Json?     @map("social_links") // e.g., { instagram: "...", twitter: "..." }
   location            String?
   interests           String[] @default([]) // List of user interests (e.g. touring, sports)
   onboardingCompleted Boolean  @default(false) @map("onboarding_completed")
@@ -874,6 +875,7 @@ model Club {
   joinRequests      ClubJoinRequest[]
   groups            FriendGroup[]
   moderationActions ClubModerationAction[]
+  listings          MarketplaceListing[]  @relation("ClubListings")
 
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
@@ -921,6 +923,15 @@ model MarketplaceListing {
   sellerId String @map("seller_id")
   seller   User   @relation("SellerListings", fields: [sellerId], references: [id], onDelete: Cascade)
 
+  // ── Club scoping ──────────────────────────────────────────────────────────
+  // When a listing is posted inside a club's market, `clubId` links it to that
+  // club. `visibility` controls its reach:
+  //   PUBLIC    → also shows in the global marketplace
+  //   CLUB_ONLY → visible only to members of the club
+  clubId     String? @map("club_id")
+  club       Club?   @relation("ClubListings", fields: [clubId], references: [id], onDelete: SetNull)
+  visibility String  @default("PUBLIC") @map("visibility") // PUBLIC | CLUB_ONLY
+
   // Reviews relation
   reviews Review[]
 
@@ -934,6 +945,7 @@ model MarketplaceListing {
   @@index([latitude, longitude], map: "listings_geo_idx")
   @@index([status, createdAt], map: "listings_status_created_idx")
   @@index([featured, featuredUntil], map: "marketplace_featured_idx")
+  @@index([clubId, status], map: "listings_club_idx")
   @@map("marketplace_listings")
 }
 
@@ -1193,10 +1205,50 @@ model Bike {
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
+  // Structured DB relation
+  bikeModelId  String?   @map("bike_model_id")
+  bikeModel    BikeModel? @relation(fields: [bikeModelId], references: [id])
+
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
+  @@index([bikeModelId])
   @@map("bikes")
+}
+
+model Manufacturer {
+  id            String      @id @default(cuid())
+  name          String      @unique
+  logoUrl       String?     @map("logo_url")
+  description   String?     @db.Text
+  originCountry String?     @map("origin_country")
+  foundedYear   Int?        @map("founded_year")
+  models        BikeModel[]
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("manufacturers")
+}
+
+model BikeModel {
+  id             String       @id @default(cuid())
+  manufacturerId String       @map("manufacturer_id")
+  name           String
+  imageUrl       String?      @map("image_url")
+  category       String?      // e.g. SPORT, NAKED, ADVENTURE
+  engineCc       Int?         @map("engine_cc")
+  startYear      Int?         @map("start_year")
+  endYear        Int?         @map("end_year")
+
+  manufacturer   Manufacturer @relation(fields: [manufacturerId], references: [id], onDelete: Cascade)
+  userBikes      Bike[]
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@index([manufacturerId])
+  @@map("bike_models")
 }
 
 // Badge definitions (master list of all badges)

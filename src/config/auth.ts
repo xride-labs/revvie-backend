@@ -1,6 +1,6 @@
 import { betterAuth } from "better-auth";
 import { prismaAdapter } from "better-auth/adapters/prisma";
-import { bearer, emailOTP } from "better-auth/plugins";
+import { bearer, emailOTP, magicLink } from "better-auth/plugins";
 import prisma from "../lib/prisma.js";
 import type { Request, Response, NextFunction } from "express";
 import { fromNodeHeaders } from "better-auth/node";
@@ -9,6 +9,7 @@ import {
   sendResetPasswordEmail,
   sendVerificationEmail,
   sendWelcomeEmail,
+  sendMagicLinkEmail,
 } from "../lib/mailer.js";
 
 // User roles enum (sync with Prisma schema)
@@ -287,6 +288,36 @@ export const auth = betterAuth({
           isNewUser: !existing,
         });
         if (!sent) throw new Error("Failed to send OTP email");
+      },
+    }),
+    magicLink({
+      sendMagicLink: async ({ email, url }) => {
+        if (process.env.NODE_ENV === "development") {
+          console.log(`\n==================================`);
+          console.log(`[DEV] Magic Link for ${email} → ${url}`);
+          console.log(`==================================\n`);
+          return;
+        }
+
+        const parsedUrl = new URL(url);
+        const token = parsedUrl.searchParams.get("token");
+        // Use a generic deep link that the Expo app will intercept
+        const deepLinkUrl = `revvie://magic-link?token=${token}`;
+
+        const existing = await prisma.user
+          .findFirst({
+            where: { email },
+            select: { id: true, name: true },
+          })
+          .catch(() => null);
+
+        const sent = await sendMagicLinkEmail({
+          to: email,
+          name: existing?.name,
+          magicLinkUrl: deepLinkUrl,
+        });
+
+        if (!sent) throw new Error("Failed to send Magic Link email");
       },
     }),
   ],

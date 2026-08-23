@@ -7,6 +7,7 @@ import {
   buildRideJoinRequestTemplate,
   buildVerificationTemplate,
   buildWelcomeTemplate,
+  buildMagicLinkTemplate,
 } from "./emailTemplates.js";
 
 export type EmailPayload = {
@@ -317,6 +318,26 @@ export async function sendWelcomeEmail(params: {
   const template = buildWelcomeTemplate({
     name: params.name,
     appUrl,
+  });
+
+  return sendEmail({
+    to: params.to,
+    toName: normalizeName(params.name),
+    subject: template.subject,
+    text: template.text,
+    html: template.html,
+    tags: template.tags,
+  });
+}
+
+export async function sendMagicLinkEmail(params: {
+  to: string;
+  name?: string | null;
+  magicLinkUrl: string;
+}): Promise<boolean> {
+  const template = buildMagicLinkTemplate({
+    name: params.name,
+    magicLinkUrl: params.magicLinkUrl,
   });
 
   return sendEmail({

@@ -485,40 +485,52 @@ export class LocationService {
     rideId: string,
     requestingUserId: string
   ): Promise<FriendLocation[]> {
-    // Verify user is part of the ride
-    const participation = await prisma.rideParticipant.findFirst({
-      where: {
-        rideId,
-        userId: requestingUserId,
-      },
-    });
+    // Verify user is part of the ride or is the creator
+    const [participation, ride] = await Promise.all([
+      prisma.rideParticipant.findFirst({
+        where: {
+          rideId,
+          userId: requestingUserId,
+        },
+      }),
+      prisma.ride.findUnique({
+        where: { id: rideId },
+        select: { id: true, creatorId: true },
+      }),
+    ]);
 
-    if (!participation) {
+    if (!participation && ride?.creatorId !== requestingUserId) {
       throw new Error("Not a participant of this ride");
     }
 
-    // Get all ride participants
+    // Get all ride participants and creator
     const participants = await prisma.rideParticipant.findMany({
-      where: { rideId },
+      where: {
+        rideId,
+        status: { in: ["ACCEPTED", "COMPLETED"] },
+      },
       select: { userId: true },
     });
 
-    const participantIds = participants
-      .map((p) => p.userId)
-      .filter((id) => id !== requestingUserId);
+    const allMemberIds = new Set(participants.map((p) => p.userId));
+    if (ride?.creatorId) {
+      allMemberIds.add(ride.creatorId);
+    }
+    allMemberIds.delete(requestingUserId);
+
+    const participantIds = Array.from(allMemberIds);
 
     if (participantIds.length === 0) {
       return [];
     }
 
-    // Get their locations
+    // Get their locations (active ride participants share location with the group)
     const now = new Date();
-    const staleThreshold = new Date(now.getTime() - 10 * 60 * 1000); // 10 minutes for rides
+    const staleThreshold = new Date(now.getTime() - 15 * 60 * 1000); // 15 minutes for rides
 
     const locations = await prisma.userLiveLocation.findMany({
       where: {
         userId: { in: participantIds },
-        ghostMode: false,
         updatedAt: { gt: staleThreshold },
       },
       include: {

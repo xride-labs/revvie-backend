@@ -18,3 +18,5 @@ export { default as publicRoutes } from "./public/public.routes.js";
 export { default as businessRoutes } from "./business/business.routes.js";
 export { default as adsRoutes } from "./ads/ads.routes.js";
 export { default as discountRoutes } from "./discount/discount.routes.js";
+export { default as bulkRoutes } from "./bulk.routes.js";
+export { catalogRoutes } from "./catalog/index.js";

@@ -16,6 +16,10 @@ import { z } from "zod";
 import { validateQuery } from "../../middlewares/validation.js";
 import { awardXp } from "../../lib/xp.js";
 import { isStaff } from "../../lib/utils/permissions.js";
+import { ensureAnnouncementsGroup } from "../../services/clubGroupChat.service.js";
+import { ChatService } from "../../services/chat.service.js";
+import { MessageType } from "../../models/chat.model.js";
+import { fanoutNewMessage } from "../../lib/socket.js";
 
 const router = Router();
 
@@ -322,6 +326,36 @@ router.post(
     });
 
     await awardXp(session.user.id, "POST_CREATED", `post ${post.id}`);
+
+    // Bridge: mirror a club announcement into that club's Announcements channel
+    // so members see it in chat too (WhatsApp-Community style). Gated by the
+    // SAME admin check above. Best-effort + fire-and-forget — a chat hiccup must
+    // never fail the post, and the response shouldn't wait on the mirror.
+    if (isAnnouncement && clubId) {
+      void (async () => {
+        try {
+          const { conversationId } = await ensureAnnouncementsGroup(clubId);
+          const senderName = post.author?.name || "Club";
+          const message = await ChatService.sendMessage({
+            conversationId,
+            senderId: session.user.id,
+            senderName,
+            text: content,
+            messageType: MessageType.TEXT,
+          });
+          await fanoutNewMessage({
+            conversationId,
+            senderId: session.user.id,
+            senderName,
+            message,
+            text: content,
+            messageType: "text",
+          });
+        } catch (err) {
+          console.error("[feed] announcement→chat bridge failed:", err);
+        }
+      })();
+    }
 
     ApiResponse.created(res, post);
   }),
