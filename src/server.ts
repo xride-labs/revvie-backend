@@ -48,6 +48,7 @@ import {
   maintenanceModeMiddleware,
   signupGateMiddleware,
 } from "./middlewares/appSettings.js";
+import { welcomeHtml } from "./data/welcome.js";
 
 initSentry(); // env vars are loaded; initialize before any middleware
 
@@ -255,6 +256,11 @@ app.use("/api/ads", adsRoutes);
 app.use("/api/discounts", discountRoutes);
 app.use("/api/bulk", bulkRoutes);
 app.use("/api/catalog", catalogRoutes);
+
+// Base URL welcome page
+app.get("/", (req: Request, res: Response) => {
+  res.send(welcomeHtml);
+});
 
 // 404 handler
 app.use((req: Request, res: Response) => {

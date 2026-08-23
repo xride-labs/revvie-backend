@@ -104,7 +104,7 @@ export const updateProfileSchema = z.object({
     .optional(),
   avatar: z.string().url("Invalid avatar URL").optional(),
   coverImage: z.string().url("Invalid cover image URL").optional(),
-  socialLinks: z.record(z.string().url("Invalid URL")).optional(),
+  socialLinks: z.record(z.string(), z.string().url("Invalid URL")).optional(),
   ghostModeEnabled: z.boolean().optional(),
   interests: z.array(z.string()).optional(),
   activityLevel: z.enum(["Casual", "Regular", "Enthusiast", "Pro"]).optional(),
