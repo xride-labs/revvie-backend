@@ -1,4 +1,5 @@
 import { Router, Request, Response } from "express";
+import rateLimit, { ipKeyGenerator } from "express-rate-limit";
 import { z } from "zod";
 import prisma from "../../lib/prisma.js";
 import { requireAuth } from "../../config/auth.js";
@@ -26,7 +27,11 @@ import { sendRideJoinRequestEmail } from "../../lib/mailer.js";
 import { createNotification, notifyUsers } from "../../lib/notifications.js";
 import { ElevationService } from "../../services/elevation.service.js";
 import { computeRideSummary, deriveEffectiveDurationSec } from "../../services/ride-summary.service.js";
-import { markRideCompleted, broadcastRiderLocation } from "../../lib/socket.js";
+import {
+  markRideCompleted,
+  broadcastRiderLocation,
+  broadcastRiderLocationBatch,
+} from "../../lib/socket.js";
 import { LocationService } from "../../services/location.service.js";
 import { requirePro } from "../../lib/subscription.js";
 import { rideToGpx } from "../../lib/gpx.js";
@@ -1822,6 +1827,57 @@ router.get(
   }),
 );
 
+// The blanket IP-keyed apiLimiter in server.ts is the only rate limit
+// telemetry had before this — every rider on a shared IP/NAT shared one
+// bucket, which both under-protects the server (one rider can't be
+// individually throttled) and makes multi-rider load-testing from a single
+// machine trip the limit immediately. These are keyed per participant per
+// ride instead.
+const isProduction = process.env.NODE_ENV === "production";
+
+const telemetryLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  // Real cadence is ~15-20 pings/min per rider (foreground + background
+  // tracking combined) — 30/min leaves headroom without opening the door to
+  // a runaway client hammering the endpoint.
+  max: isProduction ? 30 : 1000,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req: Request) => {
+    const userId = (req as any).session?.user?.id;
+    // These routes sit behind requireAuth, so userId is present in
+    // practice — the IP fallback only matters defensively, but
+    // express-rate-limit requires IPv6 addresses go through its own
+    // normalization helper rather than being used raw as a key.
+    const idPart = userId || ipKeyGenerator(req.ip ?? "");
+    return `${idPart}:${req.params.id}`;
+  },
+  message: {
+    error: { code: "RATE_LIMITED", message: "Too many telemetry updates. Slow down." },
+  },
+});
+
+const telemetryBatchLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  // Batch calls are inherently bursty (queued offline pings flushed at
+  // once) — allow a handful per minute rather than per-ping cadence.
+  max: isProduction ? 6 : 1000,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req: Request) => {
+    const userId = (req as any).session?.user?.id;
+    // These routes sit behind requireAuth, so userId is present in
+    // practice — the IP fallback only matters defensively, but
+    // express-rate-limit requires IPv6 addresses go through its own
+    // normalization helper rather than being used raw as a key.
+    const idPart = userId || ipKeyGenerator(req.ip ?? "");
+    return `${idPart}:${req.params.id}`;
+  },
+  message: {
+    error: { code: "RATE_LIMITED", message: "Too many telemetry batches. Slow down." },
+  },
+});
+
 const rideTelemetrySchema = z.object({
   latitude: z.number().min(-90).max(90),
   longitude: z.number().min(-180).max(180),
@@ -1885,6 +1941,7 @@ const rideTelemetryBatchSchema = z.object({
  */
 router.post(
   "/:id/telemetry",
+  telemetryLimiter,
   validateParams(idParamSchema),
   validateBody(rideTelemetrySchema),
   asyncHandler(async (req: Request, res: Response) => {
@@ -1920,6 +1977,14 @@ router.post(
         res,
         "Only confirmed ride participants can send telemetry",
       );
+    }
+
+    // A queued/background ping landing just after pause/end is routine, not
+    // a client error — accept it (200) but skip the persist/broadcast so a
+    // stray fix from a paused or already-ended ride doesn't move the rider's
+    // marker or leak into a ride that's no longer live.
+    if (ride.status !== "IN_PROGRESS") {
+      return ApiResponse.success(res, { success: true, ignored: true });
     }
 
     const {
@@ -1998,6 +2063,7 @@ router.post(
  */
 router.post(
   "/:id/telemetry/batch",
+  telemetryBatchLimiter,
   validateParams(idParamSchema),
   validateBody(rideTelemetryBatchSchema),
   asyncHandler(async (req: Request, res: Response) => {
@@ -2036,9 +2102,16 @@ router.post(
       );
     }
 
+    if (ride.status !== "IN_PROGRESS") {
+      return ApiResponse.success(res, { success: true, ignored: true, processed: 0 });
+    }
+
     const latestPing = pings[pings.length - 1];
 
     if (latestPing) {
+      // Only the final ping's position is persisted — LocationService is a
+      // single-row upsert per user with no per-ping history table, so
+      // replaying every ping into it would just overwrite itself N times.
       await LocationService.updateLocation({
         userId,
         latitude: latestPing.latitude,
@@ -2053,22 +2126,27 @@ router.post(
         rideId: id,
       });
 
-      await broadcastRiderLocation({
-        rideId: id,
+      // Every ping is broadcast, in order, in one event — previously only
+      // the last ping was ever emitted, so a client catching up after a
+      // connectivity gap (exactly what this endpoint exists for) saw the
+      // rider teleport straight to their latest position instead of the
+      // actual path they rode while offline.
+      await broadcastRiderLocationBatch(
+        id,
         userId,
-        name: user?.name || "Rider",
-        avatar: user?.avatar,
-        latitude: latestPing.latitude,
-        longitude: latestPing.longitude,
-        heading: latestPing.heading,
-        speed: latestPing.speed,
-        altitude: latestPing.altitude,
-        accuracy: latestPing.accuracy,
-        isMoving: latestPing.isMoving,
-        timestamp: latestPing.capturedAt
-          ? new Date(latestPing.capturedAt).toISOString()
-          : undefined,
-      });
+        user?.name || "Rider",
+        user?.avatar,
+        pings.map((p: typeof latestPing) => ({
+          latitude: p.latitude,
+          longitude: p.longitude,
+          heading: p.heading,
+          speed: p.speed,
+          altitude: p.altitude,
+          accuracy: p.accuracy,
+          isMoving: p.isMoving,
+          timestamp: p.capturedAt ? new Date(p.capturedAt).toISOString() : undefined,
+        })),
+      );
     }
 
     ApiResponse.success(res, { processed: pings.length });
