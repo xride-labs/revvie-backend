@@ -670,7 +670,7 @@ export async function deleteMedia(
 export async function deleteMultipleMedia(
   publicIds: string[],
   resourceType: "image" | "video" = "image",
-): Promise<{ deleted: string[]; failed: string[] }> {
+): Promise<{ deleted: string[]; failed: string[]; notFound: string[] }> {
   try {
     const result = await cloudinary.api.delete_resources(publicIds, {
       resource_type: resourceType,
@@ -678,13 +678,19 @@ export async function deleteMultipleMedia(
     const deleted = Object.keys(result.deleted).filter(
       (id) => result.deleted[id] === "deleted",
     );
-    const failed = Object.keys(result.deleted).filter(
-      (id) => result.deleted[id] !== "deleted",
+    // "not_found" means the asset was already gone from Cloudinary — the
+    // local DB row is safe to drop so we stop retrying it every night.
+    const notFound = Object.keys(result.deleted).filter(
+      (id) => result.deleted[id] === "not_found",
     );
-    return { deleted, failed };
+    const failed = Object.keys(result.deleted).filter((id) => {
+      const status = result.deleted[id];
+      return status !== "deleted" && status !== "not_found";
+    });
+    return { deleted, failed, notFound };
   } catch (error) {
     console.error("Cloudinary bulk delete error:", error);
-    return { deleted: [], failed: publicIds };
+    return { deleted: [], failed: publicIds, notFound: [] };
   }
 }
 

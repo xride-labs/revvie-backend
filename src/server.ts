@@ -48,6 +48,7 @@ import {
   maintenanceModeMiddleware,
   signupGateMiddleware,
 } from "./middlewares/appSettings.js";
+import { globalErrorHandler } from "./middlewares/errorHandler.js";
 import { welcomeHtml } from "./data/welcome.js";
 
 initSentry(); // env vars are loaded; initialize before any middleware
@@ -135,7 +136,7 @@ app.all("/api/auth/*", toNodeHandler(auth));
 app.use("/api/payments/webhook", express.raw({ type: "application/json" }));
 
 // Body parsing middleware (AFTER Better Auth).
-// Limit raised to 15mb because the mobile client sends base64-encoded images
+// Limit raised to 25mb because the mobile client sends base64-encoded images
 // inline (avatars, ride/club banners, listing photos) and ride creation
 // includes the full route polyline geometry. Default 100kb is too small.
 app.use(express.json({ limit: "25mb" }));
@@ -271,19 +272,7 @@ app.use((req: Request, res: Response) => {
 setupSentryErrorHandler(app);
 
 // Global error handler
-app.use((err: Error, req: Request, res: Response, next: NextFunction) => {
-  if (process.env.NODE_ENV === "development") {
-    console.error(`[DEV][HTTP_ERROR] ${req.method} ${req.originalUrl}`, err);
-  }
-
-  // Don't leak the raw Error object to clients in production
-  ApiResponse.internalError(
-    res,
-    "An unexpected error occurred",
-    process.env.NODE_ENV === "production" ? undefined : err,
-    { log: false },
-  );
-});
+app.use(globalErrorHandler);
 
 // Start server
 export async function startServer() {

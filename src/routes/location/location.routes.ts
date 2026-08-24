@@ -1,4 +1,4 @@
-import { Router, Request, Response } from "express";
+import { Router, Request, Response, NextFunction } from "express";
 import { requireAuth } from "../../config/auth.js";
 import {
   validateBody,
@@ -22,6 +22,35 @@ router.use(requireAuth);
 // only writing your own live location and managing share permissions is
 // gated, since that's the actual product value (and battery cost).
 const requireLiveLocationPro = requirePro("Live location sharing");
+
+/**
+ * Conditional PRO gate for POST /api/location: active ride telemetry is
+ * permitted for all ride participants, but social live-location sharing
+ * requires Revvie Pro. Runs BEFORE body validation so entitlement errors
+ * surface as 403 instead of being masked by validation 400s.
+ */
+const requireSocialLocationPro = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { isOnRide, rideId } = (req.body ?? {}) as {
+      isOnRide?: boolean;
+      rideId?: string;
+    };
+    if (!isOnRide || !rideId) {
+      const userId = (req as any).session?.user?.id;
+      const hasPro = await isUserPro(userId);
+      if (!hasPro) {
+        return ApiResponse.forbidden(
+          res,
+          "Live location sharing requires Revvie Pro. Upgrade to unlock this feature.",
+          ErrorCode.SUBSCRIPTION_REQUIRED,
+        );
+      }
+    }
+    next();
+  } catch (error) {
+    next(error);
+  }
+};
 
 // ─── Validation Schemas ──────────────────────────────────────────────────────
 
@@ -109,23 +138,11 @@ const rideIdParamSchema = z.object({
  */
 router.post(
   "/",
+  requireSocialLocationPro,
   validateBody(updateLocationSchema),
   asyncHandler(async (req: Request, res: Response) => {
     const userId = (req as any).session?.user?.id;
     const { isOnRide, rideId, ...rest } = req.body;
-
-    // Social friend-map live location sharing requires Revvie Pro,
-    // but active ride tracking telemetry is permitted for all ride participants.
-    if (!isOnRide || !rideId) {
-      const hasPro = await isUserPro(userId);
-      if (!hasPro) {
-        return ApiResponse.forbidden(
-          res,
-          "Live location sharing requires Revvie Pro. Upgrade to unlock this feature.",
-          ErrorCode.SUBSCRIPTION_REQUIRED,
-        );
-      }
-    }
 
     await LocationService.updateLocation({
       userId,

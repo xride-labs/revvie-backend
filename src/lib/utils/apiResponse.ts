@@ -115,12 +115,25 @@ export class ApiResponse {
     code: string = ErrorCode.INTERNAL_ERROR,
     details?: any,
   ): void {
+    // Never ship raw stack traces outside development — callers sometimes
+    // forward Error objects (or wrappers) as `details`.
+    let safeDetails = details;
+    if (
+      process.env.NODE_ENV !== "development" &&
+      safeDetails &&
+      typeof safeDetails === "object" &&
+      "stack" in safeDetails
+    ) {
+      const { stack: _stack, ...rest } = safeDetails;
+      safeDetails = rest;
+    }
+
     const response: ApiResponseFormat = {
       success: false,
       message,
       error: {
         code,
-        ...(details && { details }),
+        ...(safeDetails && { details: safeDetails }),
       },
     };
 

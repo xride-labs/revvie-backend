@@ -14,6 +14,16 @@ const RIDE_RETENTION_DAYS = parseInt(
 const DEFAULT_SELF_PING_INTERVAL_MINUTES = 10;
 const SELF_PING_TIMEOUT_MS = 10_000;
 
+// Rides are processed in bounded batches so a large backlog (e.g. the first
+// run after tightening retention rules) can't create one huge transaction.
+const RIDE_CLEANUP_BATCH = 100;
+
+// Safety net for rides without a declared duration: never auto-complete a
+// ride that started less than this long ago. Real riders start rides manually
+// and can be out for hours — force-completing a live ride mid-activity is
+// destructive, so anything still inside this window is left alone.
+const MAX_RIDE_ACTIVE_MS = 12 * 60 * 60 * 1000;
+
 /**
  * Ride cleanup job - runs daily at 2 AM
  * Deletes rides that ended more than RIDE_RETENTION_DAYS ago
@@ -31,63 +41,63 @@ export async function cleanupOldRides(): Promise<{
     const cutoffDate = new Date();
     cutoffDate.setDate(cutoffDate.getDate() - RIDE_RETENTION_DAYS);
 
-    // Find rides to delete
-    // Rides that are COMPLETED or CANCELLED and ended before cutoff date
-    // and don't have keepPermanently flag
-    const ridesToDelete = await prisma.ride.findMany({
-      where: {
-        status: { in: ["COMPLETED", "CANCELLED"] },
-        updatedAt: { lt: cutoffDate },
-        // Using a raw query approach since keepPermanently might need to be added to schema
-        // For now, we'll check rides that were completed/cancelled before cutoff
-      },
-      select: {
-        id: true,
-        title: true,
-        chatGroupId: true,
-      },
-    });
+    // eslint-disable-next-line no-constant-condition
+    while (true) {
+      // Find rides to delete: COMPLETED/CANCELLED past the retention window.
+      // Rides flagged keepPermanently are user-pinned and MUST survive —
+      // excluding them here is the whole point of the flag.
+      const ridesToDelete = await prisma.ride.findMany({
+        where: {
+          status: { in: ["COMPLETED", "CANCELLED"] },
+          updatedAt: { lt: cutoffDate },
+          keepPermanently: false,
+        },
+        select: {
+          id: true,
+          title: true,
+          chatGroupId: true,
+        },
+        take: RIDE_CLEANUP_BATCH,
+      });
 
-    console.log(
-      `[Ride Cleanup] Found ${ridesToDelete.length} rides eligible for deletion`,
-    );
+      if (ridesToDelete.length === 0) break;
 
-    for (const ride of ridesToDelete) {
+      const rideIds = ridesToDelete.map((r) => r.id);
+      const chatGroupIds = ridesToDelete
+        .map((r) => r.chatGroupId)
+        .filter((id): id is string => Boolean(id));
+
       try {
-        // Delete associated chat messages if chat group exists
-        if (ride.chatGroupId) {
-          await prisma.chatMessage.deleteMany({
-            where: { chatGroupId: ride.chatGroupId },
-          });
-        }
-
-        // Delete ride participants
-        await prisma.rideParticipant.deleteMany({
-          where: { rideId: ride.id },
-        });
-
-        // Delete associated posts (optional - might want to keep as archived)
-        await prisma.post.deleteMany({
-          where: { rideId: ride.id },
-        });
-
-        // Delete the ride
-        await prisma.ride.delete({
-          where: { id: ride.id },
-        });
-
-        deleted++;
-        console.log(`[Ride Cleanup] Deleted ride: ${ride.title} (${ride.id})`);
+        // Atomic batch — either the whole batch goes or none of it does.
+        // Ratings, participants, tracking data, breaks, detours and summaries
+        // all cascade from ride deletion (see prisma/schema.prisma).
+        const [chatResult, postResult, rideResult] = await prisma.$transaction([
+          prisma.chatMessage.deleteMany({
+            where: { chatGroupId: { in: chatGroupIds } },
+          }),
+          prisma.post.deleteMany({
+            where: { rideId: { in: rideIds } },
+          }),
+          prisma.ride.deleteMany({
+            where: { id: { in: rideIds } },
+          }),
+        ]);
+        deleted += rideResult.count;
+        console.log(
+          `[Ride Cleanup] Deleted batch: ${rideResult.count} rides, ${postResult.count} posts, ${chatResult.count} chat messages`,
+        );
       } catch (error) {
-        const errorMsg = `Failed to delete ride ${ride.id}: ${(error as Error).message}`;
+        const errorMsg = `Failed to delete batch of ${ridesToDelete.length} rides: ${(error as Error).message}`;
         console.error(`[Ride Cleanup] ${errorMsg}`);
         errors.push(errorMsg);
+        // Abort rather than spin on the same failing batch forever.
+        break;
       }
+
+      if (ridesToDelete.length < RIDE_CLEANUP_BATCH) break;
     }
 
-    console.log(
-      `[Ride Cleanup] Completed. Deleted: ${deleted}, Errors: ${errors.length}`,
-    );
+    console.log(`[Ride Cleanup] Completed. Deleted: ${deleted}`);
     return { deleted, errors };
   } catch (error) {
     const errorMsg = `Ride cleanup job failed: ${(error as Error).message}`;
@@ -136,10 +146,10 @@ export async function cleanupOrphanedMedia(): Promise<{
 
       if (imageIds.length > 0) {
         const result = await deleteMultipleMedia(imageIds, "image");
-        // Only delete the DB row when Cloudinary confirmed deletion. If a
-        // resource was already gone Cloudinary returns "not_found" — those
-        // are also safe to drop locally so we don't keep retrying them.
-        const removable = new Set([...result.deleted, ...result.failed.filter((id) => /* keep retryable */ false)]);
+        // Delete the DB row when Cloudinary confirmed deletion, or when the
+        // asset was already gone ("not_found") — otherwise those rows are
+        // retried forever and never clear.
+        const removable = new Set([...result.deleted, ...result.notFound]);
         for (const m of expired) {
           if (m.type === "IMAGE" && removable.has(m.publicId)) dbIdsToDelete.push(m.id);
         }
@@ -147,7 +157,7 @@ export async function cleanupOrphanedMedia(): Promise<{
 
       if (videoIds.length > 0) {
         const result = await deleteMultipleMedia(videoIds, "video");
-        const removable = new Set(result.deleted);
+        const removable = new Set([...result.deleted, ...result.notFound]);
         for (const m of expired) {
           if (m.type === "VIDEO" && removable.has(m.publicId)) dbIdsToDelete.push(m.id);
         }
@@ -214,18 +224,43 @@ export async function updateRideStatuses(): Promise<{
       console.log(`[Ride Status] Started ${updated} rides`);
     }
 
-    // auto complete rides
-    if (startedRides.count > 0) {
+    // Auto-complete IN_PROGRESS rides whose activity window has fully
+    // elapsed: scheduled start + declared duration, capped at
+    // MAX_RIDE_ACTIVE_MS. Rides started manually by users who are still
+    // riding are inside their window and must NOT be touched —
+    // force-completing a live ride mid-activity loses tracking data.
+    const candidates = await prisma.ride.findMany({
+      where: {
+        status: "IN_PROGRESS",
+        scheduledAt: { not: null },
+      },
+      select: { id: true, scheduledAt: true, duration: true },
+    });
+
+    const nowMs = now.getTime();
+    const overdue = candidates.filter((ride) => {
+      const plannedEndMs =
+        ride.scheduledAt!.getTime() +
+        (ride.duration != null && ride.duration > 0
+          ? ride.duration * 60_000
+          : MAX_RIDE_ACTIVE_MS);
+      const hardCeilingMs = ride.scheduledAt!.getTime() + MAX_RIDE_ACTIVE_MS;
+      return Math.min(plannedEndMs, hardCeilingMs) < nowMs;
+    });
+
+    if (overdue.length > 0) {
       const completedRides = await prisma.ride.updateMany({
-        where: {
-          status: "IN_PROGRESS",
-          scheduledAt: { lt: now },
-        },
+        where: { id: { in: overdue.map((r) => r.id) } },
         data: {
           status: "COMPLETED",
+          endedAt: now,
+          endedReason: "TIMEOUT",
         },
       });
       updated += completedRides.count;
+      console.log(
+        `[Ride Status] Auto-completed ${completedRides.count} overdue rides`,
+      );
     }
 
     return { updated, errors };
