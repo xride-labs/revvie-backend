@@ -161,9 +161,15 @@ async function getCachedRiders(rideId: string): Promise<CachedRiderLocation[]> {
   return Array.from(cache.values());
 }
 
-function removeCachedRider(rideId: string, userId: string) {
+async function removeCachedRider(rideId: string, userId: string) {
+  // In-memory cache is updated synchronously either way; the Redis delete
+  // is awaited (not fire-and-forget) so a caller that notifies other
+  // clients right after this resolves can't race a late joiner's
+  // getCachedRiders() read against a still-in-flight HDEL — that gap
+  // previously let a just-disconnected rider briefly reappear in a late
+  // joiner's cached snapshot.
   if (redisCacheClient) {
-    redisCacheClient.hdel(`ride:${rideId}:riders`, userId).catch(() => {});
+    await redisCacheClient.hdel(`ride:${rideId}:riders`, userId).catch(() => {});
   }
   rideRiderCache.get(rideId)?.delete(userId);
 }
@@ -270,6 +276,72 @@ export async function broadcastRiderLocation(
   if (io) {
     io.to(`ride:${rideId}`).emit("rider_location_updated", riderPayload);
     io.to(`ride:${rideId}`).emit("participant-location", riderPayload);
+  }
+
+  return true;
+}
+
+/**
+ * Batched sibling of broadcastRiderLocation — used by the
+ * /:id/telemetry/batch route, which ingests queued offline pings. Only the
+ * *final* ping's position is persisted/cached as "current" (there's no
+ * per-ping history table, so replaying every ping into LocationService would
+ * just overwrite itself N times), but every ping is emitted in order in a
+ * single event so a client catching up after a connectivity gap sees the
+ * real trajectory instead of a single teleport to the latest point.
+ */
+export async function broadcastRiderLocationBatch(
+  rideId: string,
+  userId: string,
+  name: string,
+  avatar: string | null | undefined,
+  pings: Array<Omit<BroadcastRiderLocationInput, "rideId" | "userId" | "name" | "avatar">>,
+): Promise<boolean> {
+  if (pings.length === 0) return false;
+  if (isRideCompleted(rideId)) return false;
+
+  const ordered = pings.map((p) => {
+    const now = p.timestamp || new Date().toISOString();
+    return {
+      userId,
+      name,
+      userName: name,
+      avatar,
+      latitude: p.latitude,
+      longitude: p.longitude,
+      lat: p.latitude,
+      lon: p.longitude,
+      heading: p.heading ?? null,
+      speed: p.speed ?? null,
+      altitude: p.altitude ?? null,
+      accuracy: p.accuracy ?? null,
+      isMoving: p.isMoving ?? false,
+      timestamp: now,
+      updatedAt: now,
+    };
+  });
+
+  const last = ordered[ordered.length - 1];
+  await cacheRiderLocation(rideId, userId, {
+    userId,
+    name,
+    avatar,
+    latitude: last.latitude,
+    longitude: last.longitude,
+    heading: last.heading,
+    speed: last.speed,
+    isMoving: last.isMoving,
+    updatedAt: last.updatedAt,
+  }).catch(() => {});
+
+  const io = getIO();
+  if (io) {
+    io.to(`ride:${rideId}`).emit("rider_location_batch", { userId, points: ordered });
+    // Also emit the single-point events for the latest ping so clients that
+    // only listen for rider_location_updated (not yet updated for the batch
+    // event) still see the rider's current position.
+    io.to(`ride:${rideId}`).emit("rider_location_updated", last);
+    io.to(`ride:${rideId}`).emit("participant-location", last);
   }
 
   return true;
@@ -1046,12 +1118,12 @@ export function createSocketServer(httpServer: HttpServer): Server {
 
     // ── leave_ride_tracking / leave-ride ──────────────────────────────
 
-    const handleLeaveRideTracking = (
+    const handleLeaveRideTracking = async (
       payload: JoinRidePayload,
       ack?: (...args: any[]) => void,
     ) => {
       socket.leave(`ride:${payload.rideId}`);
-      removeCachedRider(payload.rideId, userId);
+      await removeCachedRider(payload.rideId, userId);
       socketRides.get(socket.id)?.delete(payload.rideId);
 
       const leftPayload = {
@@ -1230,7 +1302,7 @@ export function createSocketServer(httpServer: HttpServer): Server {
 
     // ── disconnect ─────────────────────────────────────────────────────
 
-    socket.on("disconnect", (reason) => {
+    socket.on("disconnect", async (reason) => {
       console.log(
         `[SOCKET] User disconnected: ${userId} (${socket.id}) — ${reason}`,
       );
@@ -1252,7 +1324,7 @@ export function createSocketServer(httpServer: HttpServer): Server {
       const rides = socketRides.get(socket.id);
       if (rides) {
         for (const rideId of rides) {
-          removeCachedRider(rideId, userId);
+          await removeCachedRider(rideId, userId);
           socket.to(`ride:${rideId}`).emit("rider_left_tracking", {
             userId,
             timestamp: new Date().toISOString(),
