@@ -305,4 +305,204 @@ describe("Event Routes", () => {
       expect(res.body.success).toBe(false);
     });
   });
+
+  // ─── POST /api/events/:id/book (TICKETING & BOOKING) ─────────────────────────
+  describe("POST /api/events/:id/book", () => {
+    it("should book tickets, create order with commission, and generate unique passes", async () => {
+      const host = await createTestUser();
+      const buyer = await createTestUser();
+
+      // Create event with tiers
+      const eventRes = await request(app)
+        .post("/api/events")
+        .set("Authorization", `Bearer ${host.token}`)
+        .send({
+          title: "Monsoon Superbike Rally",
+          scheduledAt: futureIso(),
+          tiers: [
+            { name: "General Pass", price: 500, quantity: 100, maxPerUser: 5 },
+            { name: "VIP Track Pass", price: 1500, quantity: 20, maxPerUser: 2 },
+          ],
+        });
+
+      expect(eventRes.status).toBe(201);
+      const eventId = eventRes.body.data.id;
+
+      // Fetch event to get tier id
+      const detailRes = await request(app)
+        .get(`/api/events/${eventId}`)
+        .set("Authorization", `Bearer ${buyer.token}`);
+      const vipTier = detailRes.body.data.ticketTiers.find((t: any) => t.name === "VIP Track Pass");
+
+      // Book 2 VIP tickets with UPI
+      const bookRes = await request(app)
+        .post(`/api/events/${eventId}/book`)
+        .set("Authorization", `Bearer ${buyer.token}`)
+        .send({
+          tierId: vipTier.id,
+          quantity: 2,
+          paymentMethod: "UPI",
+          upiTransactionRef: "UPI-TEST-998822",
+        });
+
+      expect(bookRes.status).toBe(201);
+      expect(bookRes.body.success).toBe(true);
+      expect(bookRes.body.data.order).toMatchObject({
+        totalAmount: 3000,
+        commissionRate: 0.035,
+        platformFee: 105,
+        organiserEarnings: 2895,
+        paymentMethod: "UPI",
+        paymentStatus: "COMPLETED",
+      });
+      expect(bookRes.body.data.tickets.length).toBe(2);
+      expect(bookRes.body.data.tickets[0].ticketCode).toMatch(/^TKT-REV-/);
+
+      // Verify inventory decremented
+      const updatedTier = await prisma.eventTicketTier.findUnique({ where: { id: vipTier.id } });
+      expect(updatedTier?.availableQuantity).toBe(18);
+    });
+
+    it("should reject booking when quantity exceeds available inventory", async () => {
+      const host = await createTestUser();
+      const buyer = await createTestUser();
+
+      const eventRes = await request(app)
+        .post("/api/events")
+        .set("Authorization", `Bearer ${host.token}`)
+        .send({
+          title: "Limited Track Session",
+          scheduledAt: futureIso(),
+          tiers: [{ name: "Exclusive Pass", price: 2000, quantity: 1 }],
+        });
+
+      const eventId = eventRes.body.data.id;
+      const detailRes = await request(app)
+        .get(`/api/events/${eventId}`)
+        .set("Authorization", `Bearer ${buyer.token}`);
+      const tier = detailRes.body.data.ticketTiers[0];
+
+      // Attempt to buy 2 tickets when only 1 is available
+      const bookRes = await request(app)
+        .post(`/api/events/${eventId}/book`)
+        .set("Authorization", `Bearer ${buyer.token}`)
+        .send({
+          tierId: tier.id,
+          quantity: 2,
+          paymentMethod: "UPI",
+        });
+
+      expect(bookRes.status).toBe(400);
+      expect(bookRes.body.success).toBe(false);
+    });
+  });
+
+  // ─── POST /api/events/:id/validate-ticket (GATE SCANNER) ──────────────────────
+  describe("POST /api/events/:id/validate-ticket", () => {
+    it("should validate a valid ticket and prevent duplicate scans", async () => {
+      const host = await createTestUser();
+      const attendee = await createTestUser();
+
+      // Create event & book a pass
+      const eventRes = await request(app)
+        .post("/api/events")
+        .set("Authorization", `Bearer ${host.token}`)
+        .send({
+          title: "Gate Check Event",
+          scheduledAt: futureIso(),
+          price: 0,
+        });
+      const eventId = eventRes.body.data.id;
+
+      const bookRes = await request(app)
+        .post(`/api/events/${eventId}/book`)
+        .set("Authorization", `Bearer ${attendee.token}`)
+        .send({ quantity: 1, paymentMethod: "FREE" });
+
+      const ticketCode = bookRes.body.data.tickets[0].ticketCode;
+
+      // 1. First Scan (Valid entry)
+      const scan1 = await request(app)
+        .post(`/api/events/${eventId}/validate-ticket`)
+        .set("Authorization", `Bearer ${host.token}`)
+        .send({ ticketCode });
+
+      expect(scan1.status).toBe(200);
+      expect(scan1.body.data.valid).toBe(true);
+      expect(scan1.body.data.alreadyUsed).toBe(false);
+      expect(scan1.body.data.attendee.id).toBe(attendee.user.id);
+
+      // 2. Second Scan (Duplicate / already used warning)
+      const scan2 = await request(app)
+        .post(`/api/events/${eventId}/validate-ticket`)
+        .set("Authorization", `Bearer ${host.token}`)
+        .send({ ticketCode });
+
+      expect(scan2.status).toBe(200);
+      expect(scan2.body.data.valid).toBe(false);
+      expect(scan2.body.data.alreadyUsed).toBe(true);
+      expect(scan2.body.data.scannedAt).toBeTruthy();
+    });
+
+    it("should reject non-hosts or unauthorized users from validating tickets", async () => {
+      const host = await createTestUser();
+      const hacker = await createTestUser();
+
+      const eventRes = await request(app)
+        .post("/api/events")
+        .set("Authorization", `Bearer ${host.token}`)
+        .send({ title: "Secure Event", scheduledAt: futureIso() });
+      const eventId = eventRes.body.data.id;
+
+      const scan = await request(app)
+        .post(`/api/events/${eventId}/validate-ticket`)
+        .set("Authorization", `Bearer ${hacker.token}`)
+        .send({ ticketCode: "TKT-REV-1234-5678" });
+
+      expect(scan.status).toBe(403);
+    });
+  });
+
+  // ─── GET /api/events/my-tickets & GET /api/events/:id/metrics ────────────────
+  describe("Pass Wallet & Organiser Metrics", () => {
+    it("should return user tickets in pass wallet and organiser sales metrics", async () => {
+      const host = await createTestUser();
+      const rider = await createTestUser();
+
+      const eventRes = await request(app)
+        .post("/api/events")
+        .set("Authorization", `Bearer ${host.token}`)
+        .send({
+          title: "Sunday Track Meet",
+          scheduledAt: futureIso(),
+          tiers: [{ name: "Rider Pass", price: 1000, quantity: 50 }],
+        });
+      const eventId = eventRes.body.data.id;
+
+      await request(app)
+        .post(`/api/events/${eventId}/book`)
+        .set("Authorization", `Bearer ${rider.token}`)
+        .send({ quantity: 1, paymentMethod: "UPI" });
+
+      // Check rider wallet
+      const walletRes = await request(app)
+        .get("/api/events/my-tickets")
+        .set("Authorization", `Bearer ${rider.token}`);
+
+      expect(walletRes.status).toBe(200);
+      expect(walletRes.body.data.length).toBeGreaterThanOrEqual(1);
+      expect(walletRes.body.data[0].event.id).toBe(eventId);
+
+      // Check organiser metrics
+      const metricsRes = await request(app)
+        .get(`/api/events/${eventId}/metrics`)
+        .set("Authorization", `Bearer ${host.token}`);
+
+      expect(metricsRes.status).toBe(200);
+      expect(metricsRes.body.data.totalTicketsSold).toBe(1);
+      expect(metricsRes.body.data.grossRevenue).toBe(1000);
+      expect(metricsRes.body.data.platformFee).toBe(35);
+      expect(metricsRes.body.data.netOrganiserEarnings).toBe(965);
+    });
+  });
 });

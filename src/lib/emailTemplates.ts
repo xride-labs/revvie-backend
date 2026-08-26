@@ -717,3 +717,89 @@ export function buildMagicLinkTemplate(params: {
     tags: ["magic-link"],
   };
 }
+
+export function buildEventBookingConfirmationTemplate(params: {
+  name?: string | null;
+  eventTitle: string;
+  eventDate: string;
+  eventTime: string;
+  venueName?: string | null;
+  orderNumber: string;
+  totalAmount: number;
+  paymentMethod: string;
+  tickets: Array<{ ticketCode: string; tierName?: string }>;
+}): EmailTemplate {
+  const firstName = getFirstName(params.name);
+  const greeting = firstName ? `Hi ${escapeHtml(firstName)},` : "Welcome rider,";
+
+  const qrTicketBlocksHtml = params.tickets
+    .map((t, idx) => {
+      const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=260x260&data=${encodeURIComponent(t.ticketCode)}&margin=1`;
+      return `
+        <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#181818;border:1px solid #2d2d2d;border-radius:14px;margin-bottom:16px;overflow:hidden;">
+          <tr>
+            <td style="padding:16px;border-bottom:1px solid #262626;">
+              <table role="presentation" width="100%">
+                <tr>
+                  <td>
+                    <span style="font-size:11px;font-family:${FONT_STACK};color:${BRAND.teal};font-weight:700;letter-spacing:1px;text-transform:uppercase;">
+                      ENTRY PASS #${idx + 1} ${t.tierName ? `&bull; ${escapeHtml(t.tierName)}` : ""}
+                    </span>
+                  </td>
+                  <td align="right">
+                    <span style="font-size:12px;font-family:${MONO_STACK};color:${BRAND.muted};">
+                      ${escapeHtml(t.ticketCode)}
+                    </span>
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+          <tr>
+            <td align="center" style="padding:24px 16px;background:#121212;">
+              <img src="${qrUrl}" width="180" height="180" alt="Ticket QR Code" style="display:block;border-radius:10px;border:3px solid #333333;background:#ffffff;padding:6px;" />
+              <p style="margin:12px 0 0 0;font-size:12px;font-family:${FONT_STACK};color:${BRAND.muted};">
+                Scan this QR code at the event entrance for admission.
+              </p>
+            </td>
+          </tr>
+        </table>
+      `;
+    })
+    .join("");
+
+  const sections: TemplateSection[] = [
+    {
+      title: "Event Details",
+      description: `<strong>${escapeHtml(params.eventTitle)}</strong><br/>📅 ${escapeHtml(params.eventDate)} at ${escapeHtml(params.eventTime)}<br/>📍 ${escapeHtml(params.venueName || "Venue details in app")}`,
+    },
+    {
+      title: "Order Breakdown",
+      description: `Order #${escapeHtml(params.orderNumber)} &bull; ${params.tickets.length} ${params.tickets.length === 1 ? "Ticket" : "Tickets"}<br/>Total Paid: ${params.totalAmount === 0 ? "FREE" : `₹${params.totalAmount}`} &bull; Method: ${escapeHtml(params.paymentMethod)}`,
+    },
+  ];
+
+  const html = buildHtml({
+    preheader: `Your tickets for ${escapeHtml(params.eventTitle)} are confirmed!`,
+    heading: "Event Booking Confirmed!",
+    greeting,
+    intro: `You're all set! Your tickets for <strong>${escapeHtml(params.eventTitle)}</strong> have been issued. Keep this email handy or open Revvie on your phone at the entrance.`,
+    sections,
+    outro: qrTicketBlocksHtml + `<p style="margin:20px 0 0 0;font-size:13px;color:${BRAND.mutedSoft};text-align:center;">Revvie Event Gate Control &bull; Powered by Xride Labs</p>`,
+  });
+
+  const text = buildText({
+    greeting,
+    heading: "Event Booking Confirmed!",
+    intro: `Your tickets for ${params.eventTitle} are confirmed.\nDate: ${params.eventDate} at ${params.eventTime}\nVenue: ${params.venueName || "Check App"}\nOrder #${params.orderNumber}\nTickets:\n` +
+      params.tickets.map((t, i) => `Ticket ${i + 1}: ${t.ticketCode} (${t.tierName || "General"})`).join("\n"),
+    outro: "Present your ticket code at the entrance for admission.",
+  });
+
+  return {
+    subject: `Booking Confirmed: ${params.eventTitle} (Order #${params.orderNumber})`,
+    html,
+    text,
+    tags: ["event-booking", "ticket-pass"],
+  };
+}

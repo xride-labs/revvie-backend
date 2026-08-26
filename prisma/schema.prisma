@@ -101,6 +101,8 @@ model User {
   rideParticipations  RideParticipant[]
   createdEvents       Event[]              @relation("EventCreator")
   eventParticipations EventParticipant[]   @relation("EventParticipations")
+  eventOrders         EventOrder[]
+  eventTickets        EventTicket[]
   createdClubs        Club[]               @relation("ClubOwner")
   clubMemberships     ClubMember[]
   clubJoinRequests    ClubJoinRequest[]
@@ -138,6 +140,10 @@ model User {
   // Marketplace relations
   listingOffersMade ListingOffer[]    @relation("ListingOffersBuyer")
   listingInterests  ListingInterest[] @relation("ListingInterests")
+
+  // Expenses
+  expensesCreated Expense[]      @relation("ExpenseCreator")
+  expenseSplits   ExpenseSplit[] @relation("ExpenseSplits")
 
   // Notification relations
   notifications        Notification[]
@@ -1690,6 +1696,9 @@ enum NotificationType {
   BUSINESS_APPROVED // Your brand/business profile was approved
   BUSINESS_REJECTED // Your brand/business profile was rejected
   SYSTEM_ALERT // Platform-wide message from admin
+  // Expenses
+  EXPENSE_SPLIT_REQUEST // Someone requested to split an expense with you
+  EXPENSE_SETTLED // Someone settled an expense split with you
 }
 
 model Notification {
@@ -1746,9 +1755,13 @@ model Event {
   status      EventStatus @default(PLANNED)
 
   // Featured / Promotion
-  isFeatured  Boolean @default(false) @map("is_featured")
-  bannerImage String? @map("banner_image")
-  ticketUrl   String? @map("ticket_url")
+  isFeatured   Boolean @default(false) @map("is_featured")
+  bannerImage  String? @map("banner_image")
+  ticketUrl    String? @map("ticket_url")
+  visibility   String  @default("PUBLIC") // PUBLIC, CLUB_ONLY, PRIVATE
+  category     String? @default("MEETUP") // MEETUP, TRACK_DAY, RALLY, WORKSHOP, TOUR
+  price        Float?  @default(0)
+  maxAttendees Int?    @map("max_attendees")
 
   // Ownership
   creatorId String  @map("creator_id")
@@ -1756,8 +1769,11 @@ model Event {
   creator   User    @relation("EventCreator", fields: [creatorId], references: [id], onDelete: Cascade)
   club      Club?   @relation("ClubEvents", fields: [clubId], references: [id], onDelete: Cascade)
 
-  // Attendees
+  // Attendees & Ticketing
   participants EventParticipant[]
+  ticketTiers  EventTicketTier[]
+  orders       EventOrder[]
+  tickets      EventTicket[]
 
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
@@ -1765,6 +1781,93 @@ model Event {
   @@index([latitude, longitude], map: "events_geo_idx")
   @@index([status, scheduledAt], map: "events_status_scheduled_idx")
   @@map("events")
+}
+
+enum EventPaymentMethod {
+  UPI
+  CASH
+  FREE
+}
+
+enum EventPaymentStatus {
+  COMPLETED
+  PENDING_CASH
+  FAILED
+  REFUNDED
+}
+
+enum EventTicketStatus {
+  BOOKED
+  USED
+  CANCELLED
+}
+
+model EventTicketTier {
+  id                String   @id @default(cuid())
+  eventId           String   @map("event_id")
+  name              String   // e.g. "General Admission", "VIP Paddock Pass"
+  description       String?  @db.Text
+  price             Float    @default(0) // In INR
+  quantity          Int      @default(100) // Total available tickets
+  availableQuantity Int      @default(100) @map("available_quantity")
+  maxPerUser        Int      @default(5) @map("max_per_user")
+
+  event             Event    @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  tickets           EventTicket[]
+
+  createdAt         DateTime @default(now()) @map("created_at")
+  updatedAt         DateTime @updatedAt @map("updated_at")
+
+  @@index([eventId], map: "idx_ticket_tier_event")
+  @@map("event_ticket_tiers")
+}
+
+model EventOrder {
+  id                String             @id @default(cuid())
+  orderNumber       String             @unique @map("order_number") // e.g. "REV-EVT-839201"
+  eventId           String             @map("event_id")
+  userId            String             @map("user_id")
+  totalAmount       Float              @default(0) @map("total_amount")
+  commissionRate    Float              @default(0.035) @map("commission_rate") // 3.5% platform fee
+  platformFee       Float              @default(0) @map("platform_fee")
+  organiserEarnings Float              @default(0) @map("organiser_earnings")
+  paymentMethod     EventPaymentMethod @default(FREE) @map("payment_method")
+  paymentStatus     EventPaymentStatus @default(COMPLETED) @map("payment_status")
+  upiTransactionRef String?            @map("upi_transaction_ref")
+
+  event             Event              @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  user              User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tickets           EventTicket[]
+
+  createdAt         DateTime           @default(now()) @map("created_at")
+  updatedAt         DateTime           @updatedAt @map("updated_at")
+
+  @@index([eventId, userId], map: "idx_event_order_event_user")
+  @@map("event_orders")
+}
+
+model EventTicket {
+  id          String            @id @default(cuid())
+  ticketCode  String            @unique @map("ticket_code") // Cryptographically unique token
+  orderId     String            @map("order_id")
+  eventId     String            @map("event_id")
+  userId      String            @map("user_id")
+  tierId      String?           @map("tier_id")
+  status      EventTicketStatus @default(BOOKED)
+  scannedAt   DateTime?         @map("scanned_at")
+  scannedById String?           @map("scanned_by_id")
+
+  order       EventOrder        @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  event       Event             @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  user        User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tier        EventTicketTier?  @relation(fields: [tierId], references: [id], onDelete: SetNull)
+
+  createdAt   DateTime          @default(now()) @map("created_at")
+  updatedAt   DateTime          @updatedAt @map("updated_at")
+
+  @@index([eventId, ticketCode], map: "idx_event_ticket_event_code")
+  @@index([userId], map: "idx_event_ticket_user")
+  @@map("event_tickets")
 }
 
 model EventParticipant {
@@ -1781,4 +1884,62 @@ model EventParticipant {
 
   @@unique([eventId, userId])
   @@map("event_participants")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// EXPENSE TRACKING
+// ─────────────────────────────────────────────────────────────────────────────
+
+enum ExpenseCategory {
+  FUEL
+  SERVICING
+  FOOD
+  ACCOMMODATION
+  OTHER
+}
+
+enum ExpenseSplitStatus {
+  PENDING
+  SETTLED
+}
+
+model Expense {
+  id          String          @id @default(cuid())
+  creatorId   String          @map("creator_id")
+  amountPaise Int             @map("amount_paise") // 100 paise = 1 INR
+  currency    String          @default("INR")
+  category    ExpenseCategory @default(OTHER)
+  description String?         @db.Text
+  date        DateTime        @default(now())
+
+  // Optional relations
+  rideId String? @map("ride_id")
+  clubId String? @map("club_id")
+
+  creator User  @relation("ExpenseCreator", fields: [creatorId], references: [id], onDelete: Cascade)
+  splits  ExpenseSplit[]
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@index([creatorId, date], map: "idx_expense_creator_date")
+  @@map("expenses")
+}
+
+model ExpenseSplit {
+  id          String             @id @default(cuid())
+  expenseId   String             @map("expense_id")
+  userId      String             @map("user_id") // The person who owes the money
+  amountPaise Int                @map("amount_paise")
+  status      ExpenseSplitStatus @default(PENDING)
+  settledAt   DateTime?          @map("settled_at")
+
+  expense Expense @relation(fields: [expenseId], references: [id], onDelete: Cascade)
+  user    User    @relation("ExpenseSplits", fields: [userId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@index([userId, status], map: "idx_expense_split_user_status")
+  @@map("expense_splits")
 }

@@ -35,6 +35,7 @@ import {
   discountRoutes,
   bulkRoutes,
   catalogRoutes,
+  expenseRoutes,
 } from "./routes/index.js";
 import {
   initializeScheduledJobs,
@@ -257,6 +258,7 @@ app.use("/api/ads", adsRoutes);
 app.use("/api/discounts", discountRoutes);
 app.use("/api/bulk", bulkRoutes);
 app.use("/api/catalog", catalogRoutes);
+app.use("/api/expenses", expenseRoutes);
 
 // Base URL welcome page
 app.get("/", (req: Request, res: Response) => {
