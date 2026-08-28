@@ -98,6 +98,7 @@ model User {
   accounts            Account[]
   sessions            Session[]
   createdRides        Ride[]               @relation("RideCreator")
+  ledRides            Ride[]               @relation("RideLead")
   rideParticipations  RideParticipant[]
   createdEvents       Event[]              @relation("EventCreator")
   eventParticipations EventParticipant[]   @relation("EventParticipations")
@@ -700,6 +701,14 @@ model Ride {
   // Creator relation
   creatorId String @map("creator_id")
   creator   User   @relation("RideCreator", fields: [creatorId], references: [id], onDelete: Cascade)
+
+  // Group ride lead — the rider other participants follow/see distinguished
+  // on the live map. Defaults to unset (creator is treated as the lead by
+  // the API until explicitly reassigned); nullable single FK rather than a
+  // per-participant role enum since a ride only ever has one lead at a
+  // time, so there's no cross-row uniqueness invariant to maintain.
+  leadUserId String? @map("lead_user_id")
+  lead       User?   @relation("RideLead", fields: [leadUserId], references: [id], onDelete: SetNull)
 
   // Club relation (optional - for club-organized rides)
   clubId String? @map("club_id")

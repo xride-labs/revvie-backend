@@ -31,6 +31,7 @@ import {
   markRideCompleted,
   broadcastRiderLocation,
   broadcastRiderLocationBatch,
+  getIO,
 } from "../../lib/socket.js";
 import { LocationService } from "../../services/location.service.js";
 import { requirePro } from "../../lib/subscription.js";
@@ -291,6 +292,9 @@ router.get(
       where: { id },
       include: {
         creator: {
+          select: { id: true, name: true, avatar: true },
+        },
+        lead: {
           select: { id: true, name: true, avatar: true },
         },
         participants: {
@@ -1554,6 +1558,73 @@ router.post(
     });
 
     ApiResponse.success(res, null, "Ride resumed");
+  }),
+);
+
+// ─── Group Ride Lead ─────────────────────────────────────────────────────────
+// A ride's lead is the rider other participants see distinguished on the
+// live map. Nullable single FK on Ride (see schema.prisma) rather than a
+// per-participant role — a ride only ever has one lead at a time. Unset
+// (leadUserId: null) means the API/clients should treat the creator as the
+// de-facto lead, so this endpoint both assigns and clears it.
+
+const setRideLeadSchema = z.object({
+  userId: z.string().min(1).nullable(),
+});
+
+router.post(
+  "/:id/lead",
+  validateParams(idParamSchema),
+  validateBody(setRideLeadSchema),
+  asyncHandler(async (req: Request, res: Response) => {
+    const session = (req as any).session;
+    const requesterId = session?.user?.id;
+    const { id } = req.params;
+    const { userId } = req.body as { userId: string | null };
+
+    const ride = await prisma.ride.findUnique({
+      where: { id },
+      select: { id: true, creatorId: true },
+    });
+    if (!ride) return ApiResponse.notFound(res, "Ride not found", ErrorCode.RIDE_NOT_FOUND);
+
+    if (ride.creatorId !== requesterId) {
+      return ApiResponse.forbidden(res, "Only the ride creator can assign the lead");
+    }
+
+    // A non-null target must be the creator or a confirmed participant —
+    // anyone else either isn't on the ride or hasn't been accepted yet.
+    if (userId !== null && userId !== ride.creatorId) {
+      const participant = await prisma.rideParticipant.findFirst({
+        where: { rideId: id, userId, status: { in: ["ACCEPTED", "COMPLETED"] } },
+      });
+      if (!participant) {
+        return ApiResponse.error(
+          res,
+          "Lead must be the creator or a confirmed participant",
+          400,
+          ErrorCode.INVALID_INPUT,
+        );
+      }
+    }
+
+    const updated = await prisma.ride.update({
+      where: { id },
+      data: { leadUserId: userId },
+      select: {
+        id: true,
+        leadUserId: true,
+        lead: { select: { id: true, name: true, avatar: true } },
+      },
+    });
+
+    getIO()?.to(`ride:${id}`).emit("ride_lead_changed", {
+      rideId: id,
+      leadUserId: updated.leadUserId,
+      lead: updated.lead,
+    });
+
+    ApiResponse.success(res, { ride: updated });
   }),
 );
 
