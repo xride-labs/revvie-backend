@@ -5,10 +5,12 @@ import { ApiResponse, ErrorCode } from "../../lib/utils/apiResponse.js";
 import { asyncHandler, validateQuery } from "../../middlewares/validation.js";
 import { friendRequestsQuerySchema } from "../../validators/schemas.js";
 import { createNotification } from "../../lib/notifications.js";
+import friendGroupRoutes from "../friend-group/friend-group.routes.js";
 
 const router = Router();
 
 router.use(requireAuth);
+router.use("/groups", friendGroupRoutes);
 
 /**
  * @swagger

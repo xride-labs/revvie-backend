@@ -19,7 +19,7 @@ const listDiscountsQuerySchema = z.object({
 });
 
 /**
- * GET /api/discounts
+ * GET /api/business/discounts
  *
  * Active discounts whose validity window includes now. Featured first
  * (sorted desc by validUntil so freshly-launched promos surface). The

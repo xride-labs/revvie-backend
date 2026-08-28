@@ -24,18 +24,16 @@ import {
   discoveryRoutes,
   chatRoutes,
   locationRoutes,
-  friendGroupRoutes,
   friendshipRoutes,
   notificationRoutes,
   paymentsRoutes,
   eventRoutes,
   publicRoutes,
   businessRoutes,
-  adsRoutes,
-  discountRoutes,
   bulkRoutes,
   catalogRoutes,
   expenseRoutes,
+  savedRoutes,
 } from "./routes/index.js";
 import {
   initializeScheduledJobs,
@@ -247,18 +245,16 @@ app.use("/api/posts", feedRoutes);
 app.use("/api/discover", discoveryRoutes);
 app.use("/api/chat", chatRoutes);
 app.use("/api/location", locationRoutes);
-app.use("/api/friend-groups", friendGroupRoutes);
 app.use("/api/friends", friendshipRoutes);
 app.use("/api/notifications", notificationRoutes);
 app.use("/api/payments", paymentsRoutes);
 app.use("/api/events", eventRoutes);
 app.use("/api/public", publicRoutes);
 app.use("/api/business", businessRoutes);
-app.use("/api/ads", adsRoutes);
-app.use("/api/discounts", discountRoutes);
 app.use("/api/bulk", bulkRoutes);
 app.use("/api/catalog", catalogRoutes);
 app.use("/api/expenses", expenseRoutes);
+app.use("/api/saved", savedRoutes);
 
 // Base URL welcome page
 app.get("/", (req: Request, res: Response) => {

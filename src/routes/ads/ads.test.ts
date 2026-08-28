@@ -3,9 +3,9 @@
  * Tests for ad-serving endpoints: list by slot, impression beacon, click beacon.
  *
  * Routes (all behind requireAuth):
- *   GET  /api/ads?slot=...&limit=...   -> ApiResponse.success({ items })
- *   POST /api/ads/:id/impression       -> ApiResponse.success(null, "Logged")
- *   POST /api/ads/:id/click            -> ApiResponse.success(null, "Logged")
+ *   GET  /api/business/ads?slot=...&limit=...   -> ApiResponse.success({ items })
+ *   POST /api/business/ads/:id/impression       -> ApiResponse.success(null, "Logged")
+ *   POST /api/business/ads/:id/click            -> ApiResponse.success(null, "Logged")
  */
 
 import request from "supertest";
@@ -56,15 +56,15 @@ describe("Ads Routes", () => {
     await cleanupTestData();
   });
 
-  // ─── GET /api/ads ──────────────────────────────────────────────────────────
-  describe("GET /api/ads", () => {
+  // ─── GET /api/business/ads ──────────────────────────────────────────────────────────
+  describe("GET /api/business/ads", () => {
     it("should return active ads for the requested slot (happy path)", async () => {
       const { token } = await createTestUser();
       const biz = await createBusiness((await createTestUser()).user.id);
       const campaign = await createCampaign(biz.id, { title: "Home Feed Ad" });
 
       const res = await request(app)
-        .get("/api/ads?slot=HOME_FEED")
+        .get("/api/business/ads?slot=HOME_FEED")
         .set("Authorization", `Bearer ${token}`);
 
       expect(res.status).toBe(200);
@@ -85,7 +85,7 @@ describe("Ads Routes", () => {
       const home = await createCampaign(biz.id, { slots: ["HOME_FEED"] });
 
       const res = await request(app)
-        .get("/api/ads?slot=DISCOVER_TOP")
+        .get("/api/business/ads?slot=DISCOVER_TOP")
         .set("Authorization", `Bearer ${token}`);
 
       expect(res.status).toBe(200);
@@ -103,7 +103,7 @@ describe("Ads Routes", () => {
       });
 
       const res = await request(app)
-        .get("/api/ads?slot=HOME_FEED")
+        .get("/api/business/ads?slot=HOME_FEED")
         .set("Authorization", `Bearer ${token}`);
 
       expect(res.status).toBe(200);
@@ -125,7 +125,7 @@ describe("Ads Routes", () => {
       });
 
       const res = await request(app)
-        .get("/api/ads?slot=HOME_FEED")
+        .get("/api/business/ads?slot=HOME_FEED")
         .set("Authorization", `Bearer ${token}`);
 
       expect(res.status).toBe(200);
@@ -142,7 +142,7 @@ describe("Ads Routes", () => {
       await createCampaign(biz.id);
 
       const res = await request(app)
-        .get("/api/ads?slot=HOME_FEED&limit=2")
+        .get("/api/business/ads?slot=HOME_FEED&limit=2")
         .set("Authorization", `Bearer ${token}`);
 
       expect(res.status).toBe(200);
@@ -155,7 +155,7 @@ describe("Ads Routes", () => {
       await createCampaign(biz.id);
 
       const res = await request(app)
-        .get("/api/ads?slot=HOME_FEED")
+        .get("/api/business/ads?slot=HOME_FEED")
         .set("Authorization", `Bearer ${token}`);
 
       expect(res.status).toBe(200);
@@ -166,7 +166,7 @@ describe("Ads Routes", () => {
       const { token } = await createTestUser();
 
       const res = await request(app)
-        .get("/api/ads")
+        .get("/api/business/ads")
         .set("Authorization", `Bearer ${token}`);
 
       expect(res.status).toBe(400);
@@ -177,7 +177,7 @@ describe("Ads Routes", () => {
       const { token } = await createTestUser();
 
       const res = await request(app)
-        .get("/api/ads?slot=NOT_A_SLOT")
+        .get("/api/business/ads?slot=NOT_A_SLOT")
         .set("Authorization", `Bearer ${token}`);
 
       expect(res.status).toBe(400);
@@ -188,7 +188,7 @@ describe("Ads Routes", () => {
       const { token } = await createTestUser();
 
       const res = await request(app)
-        .get("/api/ads?slot=HOME_FEED&limit=50")
+        .get("/api/business/ads?slot=HOME_FEED&limit=50")
         .set("Authorization", `Bearer ${token}`);
 
       expect(res.status).toBe(400);
@@ -196,22 +196,22 @@ describe("Ads Routes", () => {
     });
 
     it("should return 401 without authentication", async () => {
-      const res = await request(app).get("/api/ads?slot=HOME_FEED");
+      const res = await request(app).get("/api/business/ads?slot=HOME_FEED");
 
       expect(res.status).toBe(401);
       expect(res.body.success).toBe(false);
     });
   });
 
-  // ─── POST /api/ads/:id/impression ────────────────────────────────────────────
-  describe("POST /api/ads/:id/impression", () => {
+  // ─── POST /api/business/ads/:id/impression ────────────────────────────────────────────
+  describe("POST /api/business/ads/:id/impression", () => {
     it("should increment impressionCount (DB side-effect)", async () => {
       const { token } = await createTestUser();
       const biz = await createBusiness((await createTestUser()).user.id);
       const campaign = await createCampaign(biz.id, { impressionCount: 0 });
 
       const res = await request(app)
-        .post(`/api/ads/${campaign.id}/impression`)
+        .post(`/api/business/ads/${campaign.id}/impression`)
         .set("Authorization", `Bearer ${token}`);
 
       expect(res.status).toBe(200);
@@ -227,7 +227,7 @@ describe("Ads Routes", () => {
       const { token } = await createTestUser();
 
       const res = await request(app)
-        .post("/api/ads/clnonexistent000000000000/impression")
+        .post("/api/business/ads/clnonexistent000000000000/impression")
         .set("Authorization", `Bearer ${token}`);
 
       // Handler swallows the update error and returns success regardless.
@@ -237,7 +237,7 @@ describe("Ads Routes", () => {
 
     it("should return 401 without authentication", async () => {
       const res = await request(app).post(
-        "/api/ads/clnonexistent000000000000/impression",
+        "/api/business/ads/clnonexistent000000000000/impression",
       );
 
       expect(res.status).toBe(401);
@@ -245,15 +245,15 @@ describe("Ads Routes", () => {
     });
   });
 
-  // ─── POST /api/ads/:id/click ─────────────────────────────────────────────────
-  describe("POST /api/ads/:id/click", () => {
+  // ─── POST /api/business/ads/:id/click ─────────────────────────────────────────────────
+  describe("POST /api/business/ads/:id/click", () => {
     it("should increment clickCount (DB side-effect)", async () => {
       const { token } = await createTestUser();
       const biz = await createBusiness((await createTestUser()).user.id);
       const campaign = await createCampaign(biz.id, { clickCount: 0 });
 
       const res = await request(app)
-        .post(`/api/ads/${campaign.id}/click`)
+        .post(`/api/business/ads/${campaign.id}/click`)
         .set("Authorization", `Bearer ${token}`);
 
       expect(res.status).toBe(200);
@@ -269,7 +269,7 @@ describe("Ads Routes", () => {
       const { token } = await createTestUser();
 
       const res = await request(app)
-        .post("/api/ads/clnonexistent000000000000/click")
+        .post("/api/business/ads/clnonexistent000000000000/click")
         .set("Authorization", `Bearer ${token}`);
 
       expect(res.status).toBe(200);
@@ -278,7 +278,7 @@ describe("Ads Routes", () => {
 
     it("should return 401 without authentication", async () => {
       const res = await request(app).post(
-        "/api/ads/clnonexistent000000000000/click",
+        "/api/business/ads/clnonexistent000000000000/click",
       );
 
       expect(res.status).toBe(401);

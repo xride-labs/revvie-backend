@@ -224,6 +224,7 @@ export const createRideSchema = z.object({
   maxParticipants: z.number().int().positive().max(1000).optional(),
   friendGroupId: idSchema.optional(),
   image: z.string().optional(), // initial banner data URL (base64) — uploaded after create
+  privacyLevel: z.enum(["PUBLIC", "FRIENDS_ONLY", "INCOGNITO"]).optional(),
 });
 
 export const updateRideSchema = createRideSchema.partial();

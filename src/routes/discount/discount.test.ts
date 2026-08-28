@@ -3,7 +3,7 @@
  * Tests for the discount offer-wall endpoint.
  *
  * Routes (behind requireAuth):
- *   GET /api/discounts?featured=&page=&limit=  -> ApiResponse.paginated(items, ...)
+ *   GET /api/business/discounts?featured=&page=&limit=  -> ApiResponse.paginated(items, ...)
  *
  * Only discounts whose business is APPROVED and whose validity window
  * includes "now" are surfaced. featured=true restricts to featured items.
@@ -54,14 +54,14 @@ describe("Discount Routes", () => {
     await cleanupTestData();
   });
 
-  describe("GET /api/discounts", () => {
+  describe("GET /api/business/discounts", () => {
     it("should list active discounts in a paginated envelope (happy path)", async () => {
       const { token } = await createTestUser();
       const biz = await createBusiness((await createTestUser()).user.id);
       const discount = await createDiscount(biz.id, { title: "Spring Sale" });
 
       const res = await request(app)
-        .get("/api/discounts?page=1&limit=10")
+        .get("/api/business/discounts?page=1&limit=10")
         .set("Authorization", `Bearer ${token}`);
 
       expect(res.status).toBe(200);
@@ -91,7 +91,7 @@ describe("Discount Routes", () => {
       const hidden = await createDiscount(pendingBiz.id);
 
       const res = await request(app)
-        .get("/api/discounts")
+        .get("/api/business/discounts")
         .set("Authorization", `Bearer ${token}`);
 
       expect(res.status).toBe(200);
@@ -112,7 +112,7 @@ describe("Discount Routes", () => {
       });
 
       const res = await request(app)
-        .get("/api/discounts")
+        .get("/api/business/discounts")
         .set("Authorization", `Bearer ${token}`);
 
       expect(res.status).toBe(200);
@@ -128,7 +128,7 @@ describe("Discount Routes", () => {
       const normal = await createDiscount(biz.id, { isFeatured: false });
 
       const res = await request(app)
-        .get("/api/discounts?featured=true")
+        .get("/api/business/discounts?featured=true")
         .set("Authorization", `Bearer ${token}`);
 
       expect(res.status).toBe(200);
@@ -145,7 +145,7 @@ describe("Discount Routes", () => {
       await createDiscount(biz.id);
 
       const res = await request(app)
-        .get("/api/discounts?page=1&limit=2")
+        .get("/api/business/discounts?page=1&limit=2")
         .set("Authorization", `Bearer ${token}`);
 
       expect(res.status).toBe(200);
@@ -172,7 +172,7 @@ describe("Discount Routes", () => {
       const { token } = await createTestUser();
 
       const res = await request(app)
-        .get("/api/discounts?limit=100")
+        .get("/api/business/discounts?limit=100")
         .set("Authorization", `Bearer ${token}`);
 
       expect(res.status).toBe(400);
@@ -183,7 +183,7 @@ describe("Discount Routes", () => {
       const { token } = await createTestUser();
 
       const res = await request(app)
-        .get("/api/discounts?page=0")
+        .get("/api/business/discounts?page=0")
         .set("Authorization", `Bearer ${token}`);
 
       expect(res.status).toBe(400);
@@ -191,7 +191,7 @@ describe("Discount Routes", () => {
     });
 
     it("should return 401 without authentication", async () => {
-      const res = await request(app).get("/api/discounts");
+      const res = await request(app).get("/api/business/discounts");
 
       expect(res.status).toBe(401);
       expect(res.body.success).toBe(false);

@@ -59,17 +59,15 @@ const MOUNTS: Array<[string, string, any]> = [
   ["/api/discover", "discover", (routes as any).discoveryRoutes],
   ["/api/chat", "chat", (routes as any).chatRoutes],
   ["/api/location", "location", (routes as any).locationRoutes],
-  ["/api/friend-groups", "friend-groups", (routes as any).friendGroupRoutes],
   ["/api/friends", "friends", (routes as any).friendshipRoutes],
   ["/api/notifications", "notifications", (routes as any).notificationRoutes],
   ["/api/payments", "payments", (routes as any).paymentsRoutes],
   ["/api/events", "events", (routes as any).eventRoutes],
   ["/api/public", "public", (routes as any).publicRoutes],
   ["/api/business", "business", (routes as any).businessRoutes],
-  ["/api/ads", "ads", (routes as any).adsRoutes],
-  ["/api/discounts", "discounts", (routes as any).discountRoutes],
   ["/api/bulk", "bulk", (routes as any).bulkRoutes],
   ["/api/catalog", "catalog", (routes as any).catalogRoutes],
+  ["/api/saved", "saved", (routes as any).savedRoutes],
 ];
 
 function buildApp(): Express {

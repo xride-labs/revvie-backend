@@ -76,16 +76,30 @@ export const auth = betterAuth({
   trustedOrigins: [
     process.env.FRONTEND_URL || "http://localhost:3000",
     process.env.MOBILE_APP_URL || "http://localhost:8081",
+    "http://localhost:*",
+    "http://127.0.0.1:*",
+    "http://10.0.2.2:*",
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+    "http://localhost:5000",
+    "http://127.0.0.1:5000",
+    "http://localhost:8081",
     "http://127.0.0.1:8081",
     "http://10.0.2.2:8081",
     "http://10.0.2.2:5000",
-    "http://localhost:5000",
+    "http://10.0.2.2:3000",
+    "exp://*",
     "exp://10.0.2.2:8081",
     "exp://localhost:8081",
+    "exp://127.0.0.1:8081",
+    "revvie://*",
     "http://10.0.2.2:19000",
     "http://localhost:19000",
     "http://10.0.2.2:19006",
     "http://localhost:19006",
+    "https://*.xride-labs.in",
+    "https://revvie.xride-labs.in",
+    "https://api.revvie.xride-labs.in",
   ],
 
   // Enable email and password authentication
@@ -100,14 +114,24 @@ export const auth = betterAuth({
         return;
       }
 
-      const sent = await sendResetPasswordEmail({
-        to: user.email,
-        name: user.name,
-        resetUrl: url,
-      });
+      if (process.env.NODE_ENV === "development") {
+        console.log(`\n==================================`);
+        console.log(`[DEV] Password Reset Link for ${user.email} → ${url}`);
+        console.log(`==================================\n`);
+      }
 
-      if (!sent) {
-        throw new Error("Failed to send reset password email");
+      try {
+        const sent = await sendResetPasswordEmail({
+          to: user.email,
+          name: user.name,
+          resetUrl: url,
+        });
+
+        if (!sent) {
+          console.warn(`[AUTH] Failed to send reset password email to ${user.email}`);
+        }
+      } catch (error) {
+        console.error(`[AUTH] sendResetPassword error for ${user.email}:`, error);
       }
     },
   },

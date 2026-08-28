@@ -11,8 +11,14 @@ import {
 } from "../../middlewares/validation.js";
 import { requireRole, UserRole } from "../../middlewares/rbac.js";
 import { isStaff } from "../../lib/utils/permissions.js";
+import adsRoutes from "../ads/ads.routes.js";
+import discountRoutes from "../discount/discount.routes.js";
 
 const router = Router();
+
+// Sub-nested feature routes for Ads and Consumer Discounts
+router.use("/ads", adsRoutes);
+router.use("/discounts", discountRoutes);
 
 const idParamSchema = z.object({
   id: z.string().min(1),

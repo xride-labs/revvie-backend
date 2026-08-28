@@ -1,6 +1,6 @@
 /**
  * FRIEND GROUP ROUTES TESTS - COMPREHENSIVE AUTOMATION SUITE
- * Tests for friend group endpoints mounted at /api/friend-groups
+ * Tests for friend group endpoints mounted at /api/friends/groups
  * (routes live in src/routes/friend-group/friend-group.routes.ts).
  *
  * Coverage targets every endpoint in friend-group.routes.ts (8 total):
@@ -85,14 +85,14 @@ describe("Friend Group Routes - Comprehensive Tests", () => {
   });
 
   // ───────────────────────────────────────────────────────────────────────
-  // GET /api/friend-groups — List
+  // GET /api/friends/groups — List
   // ───────────────────────────────────────────────────────────────────────
-  describe("GET /api/friend-groups", () => {
+  describe("GET /api/friends/groups", () => {
     it("should list user's friend groups (paginated envelope)", async () => {
       const { token } = await createTestUser();
 
       const res = await request(app)
-        .get("/api/friend-groups")
+        .get("/api/friends/groups")
         .set("Authorization", `Bearer ${token}`);
 
       expect(res.status).toBe(200);
@@ -123,7 +123,7 @@ describe("Friend Group Routes - Comprehensive Tests", () => {
       await createTestFriendGroup(outsider.user.id, { name: "Outsider Squad" });
 
       const res = await request(app)
-        .get("/api/friend-groups")
+        .get("/api/friends/groups")
         .set("Authorization", `Bearer ${owner.token}`);
 
       expect(res.status).toBe(200);
@@ -138,7 +138,7 @@ describe("Friend Group Routes - Comprehensive Tests", () => {
       const group = await createTestFriendGroup(owner.user.id);
 
       const res = await request(app)
-        .get("/api/friend-groups")
+        .get("/api/friends/groups")
         .set("Authorization", `Bearer ${owner.token}`);
 
       expect(res.status).toBe(200);
@@ -160,7 +160,7 @@ describe("Friend Group Routes - Comprehensive Tests", () => {
       await createTestFriendGroup(owner.user.id, { name: "Track Day Crew" });
 
       const res = await request(app)
-        .get("/api/friend-groups")
+        .get("/api/friends/groups")
         .query({ search: "Tourers" })
         .set("Authorization", `Bearer ${owner.token}`);
 
@@ -177,7 +177,7 @@ describe("Friend Group Routes - Comprehensive Tests", () => {
       await createTestFriendGroup(owner.user.id, { name: "C Squad" });
 
       const res = await request(app)
-        .get("/api/friend-groups")
+        .get("/api/friends/groups")
         .query({ page: 1, limit: 2 })
         .set("Authorization", `Bearer ${owner.token}`);
 
@@ -195,7 +195,7 @@ describe("Friend Group Routes - Comprehensive Tests", () => {
       const { token } = await createTestUser();
 
       const res = await request(app)
-        .get("/api/friend-groups")
+        .get("/api/friends/groups")
         .query({ limit: "-5" })
         .set("Authorization", `Bearer ${token}`);
 
@@ -204,20 +204,20 @@ describe("Friend Group Routes - Comprehensive Tests", () => {
     });
 
     it("should return 401 without auth", async () => {
-      const res = await request(app).get("/api/friend-groups");
+      const res = await request(app).get("/api/friends/groups");
       expect(res.status).toBe(401);
     });
   });
 
   // ───────────────────────────────────────────────────────────────────────
-  // POST /api/friend-groups — Create
+  // POST /api/friends/groups — Create
   // ───────────────────────────────────────────────────────────────────────
-  describe("POST /api/friend-groups", () => {
+  describe("POST /api/friends/groups", () => {
     it("should create a friend group and auto-member the creator", async () => {
       const { token, user } = await createTestUser();
 
       const res = await request(app)
-        .post("/api/friend-groups")
+        .post("/api/friends/groups")
         .set("Authorization", `Bearer ${token}`)
         .send({ name: "Weekend Riders", description: "Casual cruises" });
 
@@ -248,7 +248,7 @@ describe("Friend Group Routes - Comprehensive Tests", () => {
       const friendB = await createTestUser();
 
       const res = await request(app)
-        .post("/api/friend-groups")
+        .post("/api/friends/groups")
         .set("Authorization", `Bearer ${owner.token}`)
         .send({
           name: "Invite Squad",
@@ -272,7 +272,7 @@ describe("Friend Group Routes - Comprehensive Tests", () => {
       const { token } = await createTestUser();
 
       const res = await request(app)
-        .post("/api/friend-groups")
+        .post("/api/friends/groups")
         .set("Authorization", `Bearer ${token}`)
         .send({ description: "no name here" });
 
@@ -283,22 +283,22 @@ describe("Friend Group Routes - Comprehensive Tests", () => {
 
     it("should return 401 without auth", async () => {
       const res = await request(app)
-        .post("/api/friend-groups")
+        .post("/api/friends/groups")
         .send({ name: "Nope" });
       expect(res.status).toBe(401);
     });
   });
 
   // ───────────────────────────────────────────────────────────────────────
-  // GET /api/friend-groups/:id — Detail
+  // GET /api/friends/groups/:id — Detail
   // ───────────────────────────────────────────────────────────────────────
-  describe("GET /api/friend-groups/:id", () => {
+  describe("GET /api/friends/groups/:id", () => {
     it("should return a group for its creator (201 + { group })", async () => {
       const owner = await createTestUser();
       const group = await createTestFriendGroup(owner.user.id);
 
       const res = await request(app)
-        .get(`/api/friend-groups/${group.id}`)
+        .get(`/api/friends/groups/${group.id}`)
         .set("Authorization", `Bearer ${owner.token}`);
 
       // The handler returns 201 via ApiResponse.created (not 200).
@@ -316,7 +316,7 @@ describe("Friend Group Routes - Comprehensive Tests", () => {
       await addGroupMember(group.id, member.user.id);
 
       const res = await request(app)
-        .get(`/api/friend-groups/${group.id}`)
+        .get(`/api/friends/groups/${group.id}`)
         .set("Authorization", `Bearer ${member.token}`);
 
       expect(res.status).toBe(201);
@@ -329,7 +329,7 @@ describe("Friend Group Routes - Comprehensive Tests", () => {
       const group = await createTestFriendGroup(owner.user.id);
 
       const res = await request(app)
-        .get(`/api/friend-groups/${group.id}`)
+        .get(`/api/friends/groups/${group.id}`)
         .set("Authorization", `Bearer ${outsider.token}`);
 
       expect(res.status).toBe(403);
@@ -341,7 +341,7 @@ describe("Friend Group Routes - Comprehensive Tests", () => {
       const { token } = await createTestUser();
 
       const res = await request(app)
-        .get(`/api/friend-groups/${NONEXISTENT_ID}`)
+        .get(`/api/friends/groups/${NONEXISTENT_ID}`)
         .set("Authorization", `Bearer ${token}`);
 
       expect(res.status).toBe(404);
@@ -353,15 +353,15 @@ describe("Friend Group Routes - Comprehensive Tests", () => {
       const owner = await createTestUser();
       const group = await createTestFriendGroup(owner.user.id);
 
-      const res = await request(app).get(`/api/friend-groups/${group.id}`);
+      const res = await request(app).get(`/api/friends/groups/${group.id}`);
       expect(res.status).toBe(401);
     });
   });
 
   // ───────────────────────────────────────────────────────────────────────
-  // PATCH /api/friend-groups/:id — Update
+  // PATCH /api/friends/groups/:id — Update
   // ───────────────────────────────────────────────────────────────────────
-  describe("PATCH /api/friend-groups/:id", () => {
+  describe("PATCH /api/friends/groups/:id", () => {
     it("should update a group as its creator (200 + persisted)", async () => {
       const owner = await createTestUser();
       const group = await createTestFriendGroup(owner.user.id, {
@@ -369,7 +369,7 @@ describe("Friend Group Routes - Comprehensive Tests", () => {
       });
 
       const res = await request(app)
-        .patch(`/api/friend-groups/${group.id}`)
+        .patch(`/api/friends/groups/${group.id}`)
         .set("Authorization", `Bearer ${owner.token}`)
         .send({ name: "New Name", description: "Refreshed" });
 
@@ -395,7 +395,7 @@ describe("Friend Group Routes - Comprehensive Tests", () => {
       });
 
       const res = await request(app)
-        .patch(`/api/friend-groups/${group.id}`)
+        .patch(`/api/friends/groups/${group.id}`)
         .set("Authorization", `Bearer ${admin.token}`)
         .send({ name: "Admin Edited" });
 
@@ -410,7 +410,7 @@ describe("Friend Group Routes - Comprehensive Tests", () => {
       await addGroupMember(group.id, member.user.id);
 
       const res = await request(app)
-        .patch(`/api/friend-groups/${group.id}`)
+        .patch(`/api/friends/groups/${group.id}`)
         .set("Authorization", `Bearer ${member.token}`)
         .send({ name: "Hacked Name" });
 
@@ -429,7 +429,7 @@ describe("Friend Group Routes - Comprehensive Tests", () => {
       const { token } = await createTestUser();
 
       const res = await request(app)
-        .patch(`/api/friend-groups/${NONEXISTENT_ID}`)
+        .patch(`/api/friends/groups/${NONEXISTENT_ID}`)
         .set("Authorization", `Bearer ${token}`)
         .send({ name: "Whatever" });
 
@@ -442,22 +442,22 @@ describe("Friend Group Routes - Comprehensive Tests", () => {
       const group = await createTestFriendGroup(owner.user.id);
 
       const res = await request(app)
-        .patch(`/api/friend-groups/${group.id}`)
+        .patch(`/api/friends/groups/${group.id}`)
         .send({ name: "Nope" });
       expect(res.status).toBe(401);
     });
   });
 
   // ───────────────────────────────────────────────────────────────────────
-  // DELETE /api/friend-groups/:id — Delete
+  // DELETE /api/friends/groups/:id — Delete
   // ───────────────────────────────────────────────────────────────────────
-  describe("DELETE /api/friend-groups/:id", () => {
+  describe("DELETE /api/friends/groups/:id", () => {
     it("should delete a group as its creator (200 + row removed)", async () => {
       const owner = await createTestUser();
       const group = await createTestFriendGroup(owner.user.id);
 
       const res = await request(app)
-        .delete(`/api/friend-groups/${group.id}`)
+        .delete(`/api/friends/groups/${group.id}`)
         .set("Authorization", `Bearer ${owner.token}`);
 
       expect(res.status).toBe(200);
@@ -480,7 +480,7 @@ describe("Friend Group Routes - Comprehensive Tests", () => {
       const group = await createTestFriendGroup(owner.user.id);
 
       const res = await request(app)
-        .delete(`/api/friend-groups/${group.id}`)
+        .delete(`/api/friends/groups/${group.id}`)
         .set("Authorization", `Bearer ${admin.token}`);
 
       expect(res.status).toBe(200);
@@ -497,7 +497,7 @@ describe("Friend Group Routes - Comprehensive Tests", () => {
       await addGroupMember(group.id, member.user.id);
 
       const res = await request(app)
-        .delete(`/api/friend-groups/${group.id}`)
+        .delete(`/api/friends/groups/${group.id}`)
         .set("Authorization", `Bearer ${member.token}`);
 
       expect(res.status).toBe(403);
@@ -514,7 +514,7 @@ describe("Friend Group Routes - Comprehensive Tests", () => {
       const { token } = await createTestUser();
 
       const res = await request(app)
-        .delete(`/api/friend-groups/${NONEXISTENT_ID}`)
+        .delete(`/api/friends/groups/${NONEXISTENT_ID}`)
         .set("Authorization", `Bearer ${token}`);
 
       expect(res.status).toBe(404);
@@ -525,15 +525,15 @@ describe("Friend Group Routes - Comprehensive Tests", () => {
       const owner = await createTestUser();
       const group = await createTestFriendGroup(owner.user.id);
 
-      const res = await request(app).delete(`/api/friend-groups/${group.id}`);
+      const res = await request(app).delete(`/api/friends/groups/${group.id}`);
       expect(res.status).toBe(401);
     });
   });
 
   // ───────────────────────────────────────────────────────────────────────
-  // POST /api/friend-groups/:id/members — Add members
+  // POST /api/friends/groups/:id/members — Add members
   // ───────────────────────────────────────────────────────────────────────
-  describe("POST /api/friend-groups/:id/members", () => {
+  describe("POST /api/friends/groups/:id/members", () => {
     it("should add new members as the creator (200 + { added })", async () => {
       const owner = await createTestUser();
       const friendA = await createTestUser();
@@ -541,7 +541,7 @@ describe("Friend Group Routes - Comprehensive Tests", () => {
       const group = await createTestFriendGroup(owner.user.id);
 
       const res = await request(app)
-        .post(`/api/friend-groups/${group.id}/members`)
+        .post(`/api/friends/groups/${group.id}/members`)
         .set("Authorization", `Bearer ${owner.token}`)
         .send({ userIds: [friendA.user.id, friendB.user.id] });
 
@@ -567,7 +567,7 @@ describe("Friend Group Routes - Comprehensive Tests", () => {
       await addGroupMember(group.id, existing.user.id);
 
       const res = await request(app)
-        .post(`/api/friend-groups/${group.id}/members`)
+        .post(`/api/friends/groups/${group.id}/members`)
         .set("Authorization", `Bearer ${owner.token}`)
         // existing.user.id is already a member -> must be skipped, not 409.
         .send({ userIds: [existing.user.id, fresh.user.id] });
@@ -589,7 +589,7 @@ describe("Friend Group Routes - Comprehensive Tests", () => {
       await addGroupMember(group.id, member.user.id);
 
       const res = await request(app)
-        .post(`/api/friend-groups/${group.id}/members`)
+        .post(`/api/friends/groups/${group.id}/members`)
         .set("Authorization", `Bearer ${owner.token}`)
         // creator + existing member: both already in -> nothing added.
         .send({ userIds: [owner.user.id, member.user.id] });
@@ -603,14 +603,14 @@ describe("Friend Group Routes - Comprehensive Tests", () => {
       const group = await createTestFriendGroup(owner.user.id);
 
       const missing = await request(app)
-        .post(`/api/friend-groups/${group.id}/members`)
+        .post(`/api/friends/groups/${group.id}/members`)
         .set("Authorization", `Bearer ${owner.token}`)
         .send({});
       expect(missing.status).toBe(400);
       expect(missing.body.error.code).toBe("VALIDATION_ERROR");
 
       const empty = await request(app)
-        .post(`/api/friend-groups/${group.id}/members`)
+        .post(`/api/friends/groups/${group.id}/members`)
         .set("Authorization", `Bearer ${owner.token}`)
         .send({ userIds: [] });
       expect(empty.status).toBe(400);
@@ -625,7 +625,7 @@ describe("Friend Group Routes - Comprehensive Tests", () => {
       await addGroupMember(group.id, member.user.id);
 
       const res = await request(app)
-        .post(`/api/friend-groups/${group.id}/members`)
+        .post(`/api/friends/groups/${group.id}/members`)
         .set("Authorization", `Bearer ${member.token}`)
         .send({ userIds: [target.user.id] });
 
@@ -644,7 +644,7 @@ describe("Friend Group Routes - Comprehensive Tests", () => {
       const friend = await createTestUser();
 
       const res = await request(app)
-        .post(`/api/friend-groups/${NONEXISTENT_ID}/members`)
+        .post(`/api/friends/groups/${NONEXISTENT_ID}/members`)
         .set("Authorization", `Bearer ${owner.token}`)
         .send({ userIds: [friend.user.id] });
 
@@ -658,16 +658,16 @@ describe("Friend Group Routes - Comprehensive Tests", () => {
       const group = await createTestFriendGroup(owner.user.id);
 
       const res = await request(app)
-        .post(`/api/friend-groups/${group.id}/members`)
+        .post(`/api/friends/groups/${group.id}/members`)
         .send({ userIds: [friend.user.id] });
       expect(res.status).toBe(401);
     });
   });
 
   // ───────────────────────────────────────────────────────────────────────
-  // DELETE /api/friend-groups/:id/members/:userId — Remove member
+  // DELETE /api/friends/groups/:id/members/:userId — Remove member
   // ───────────────────────────────────────────────────────────────────────
-  describe("DELETE /api/friend-groups/:id/members/:userId", () => {
+  describe("DELETE /api/friends/groups/:id/members/:userId", () => {
     it("should let the creator remove another member (200 + row gone)", async () => {
       const owner = await createTestUser();
       const member = await createTestUser();
@@ -675,7 +675,7 @@ describe("Friend Group Routes - Comprehensive Tests", () => {
       await addGroupMember(group.id, member.user.id);
 
       const res = await request(app)
-        .delete(`/api/friend-groups/${group.id}/members/${member.user.id}`)
+        .delete(`/api/friends/groups/${group.id}/members/${member.user.id}`)
         .set("Authorization", `Bearer ${owner.token}`);
 
       expect(res.status).toBe(200);
@@ -694,7 +694,7 @@ describe("Friend Group Routes - Comprehensive Tests", () => {
       await addGroupMember(group.id, member.user.id);
 
       const res = await request(app)
-        .delete(`/api/friend-groups/${group.id}/members/${member.user.id}`)
+        .delete(`/api/friends/groups/${group.id}/members/${member.user.id}`)
         .set("Authorization", `Bearer ${member.token}`);
 
       expect(res.status).toBe(200);
@@ -709,7 +709,7 @@ describe("Friend Group Routes - Comprehensive Tests", () => {
       const group = await createTestFriendGroup(owner.user.id);
 
       const res = await request(app)
-        .delete(`/api/friend-groups/${group.id}/members/${owner.user.id}`)
+        .delete(`/api/friends/groups/${group.id}/members/${owner.user.id}`)
         .set("Authorization", `Bearer ${owner.token}`);
 
       expect(res.status).toBe(400);
@@ -732,7 +732,7 @@ describe("Friend Group Routes - Comprehensive Tests", () => {
       await addGroupMember(group.id, memberB.user.id);
 
       const res = await request(app)
-        .delete(`/api/friend-groups/${group.id}/members/${memberB.user.id}`)
+        .delete(`/api/friends/groups/${group.id}/members/${memberB.user.id}`)
         .set("Authorization", `Bearer ${memberA.token}`);
 
       expect(res.status).toBe(403);
@@ -751,7 +751,7 @@ describe("Friend Group Routes - Comprehensive Tests", () => {
 
       const res = await request(app)
         .delete(
-          `/api/friend-groups/${NONEXISTENT_ID}/members/${target.user.id}`,
+          `/api/friends/groups/${NONEXISTENT_ID}/members/${target.user.id}`,
         )
         .set("Authorization", `Bearer ${owner.token}`);
 
@@ -766,16 +766,16 @@ describe("Friend Group Routes - Comprehensive Tests", () => {
       await addGroupMember(group.id, member.user.id);
 
       const res = await request(app).delete(
-        `/api/friend-groups/${group.id}/members/${member.user.id}`,
+        `/api/friends/groups/${group.id}/members/${member.user.id}`,
       );
       expect(res.status).toBe(401);
     });
   });
 
   // ───────────────────────────────────────────────────────────────────────
-  // POST /api/friend-groups/:id/rides — Create ride from group
+  // POST /api/friends/groups/:id/rides — Create ride from group
   // ───────────────────────────────────────────────────────────────────────
-  describe("POST /api/friend-groups/:id/rides", () => {
+  describe("POST /api/friends/groups/:id/rides", () => {
     it("should create a ride as a group member (201 + auto-participants)", async () => {
       const owner = await createTestUser();
       const member = await createTestUser();
@@ -783,7 +783,7 @@ describe("Friend Group Routes - Comprehensive Tests", () => {
       await addGroupMember(group.id, member.user.id);
 
       const res = await request(app)
-        .post(`/api/friend-groups/${group.id}/rides`)
+        .post(`/api/friends/groups/${group.id}/rides`)
         .set("Authorization", `Bearer ${owner.token}`)
         .send({
           title: "Squad Sunday Run",
@@ -819,14 +819,14 @@ describe("Friend Group Routes - Comprehensive Tests", () => {
       const group = await createTestFriendGroup(owner.user.id);
 
       const noTitle = await request(app)
-        .post(`/api/friend-groups/${group.id}/rides`)
+        .post(`/api/friends/groups/${group.id}/rides`)
         .set("Authorization", `Bearer ${owner.token}`)
         .send({ startLocation: "Somewhere" });
       expect(noTitle.status).toBe(400);
       expect(noTitle.body.error.code).toBe("VALIDATION_ERROR");
 
       const noStart = await request(app)
-        .post(`/api/friend-groups/${group.id}/rides`)
+        .post(`/api/friends/groups/${group.id}/rides`)
         .set("Authorization", `Bearer ${owner.token}`)
         .send({ title: "Missing Start" });
       expect(noStart.status).toBe(400);
@@ -839,7 +839,7 @@ describe("Friend Group Routes - Comprehensive Tests", () => {
       const group = await createTestFriendGroup(owner.user.id);
 
       const res = await request(app)
-        .post(`/api/friend-groups/${group.id}/rides`)
+        .post(`/api/friends/groups/${group.id}/rides`)
         .set("Authorization", `Bearer ${outsider.token}`)
         .send({ title: "Intruder Ride", startLocation: "Gate" });
 
@@ -854,7 +854,7 @@ describe("Friend Group Routes - Comprehensive Tests", () => {
       const { token } = await createTestUser();
 
       const res = await request(app)
-        .post(`/api/friend-groups/${NONEXISTENT_ID}/rides`)
+        .post(`/api/friends/groups/${NONEXISTENT_ID}/rides`)
         .set("Authorization", `Bearer ${token}`)
         .send({ title: "Ghost Ride", startLocation: "Nowhere" });
 
@@ -867,7 +867,7 @@ describe("Friend Group Routes - Comprehensive Tests", () => {
       const group = await createTestFriendGroup(owner.user.id);
 
       const res = await request(app)
-        .post(`/api/friend-groups/${group.id}/rides`)
+        .post(`/api/friends/groups/${group.id}/rides`)
         .send({ title: "Nope", startLocation: "Nowhere" });
       expect(res.status).toBe(401);
     });

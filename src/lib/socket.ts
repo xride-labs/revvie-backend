@@ -175,6 +175,7 @@ async function removeCachedRider(rideId: string, userId: string) {
   }
   rideRiderCache.get(rideId)?.delete(userId);
   clearHealthState(rideId, userId);
+  regroupArrivals.get(rideId)?.delete(userId);
 }
 
 // Track which rides each socket is in so we can clean up on disconnect
@@ -435,6 +436,73 @@ export function clearRideEventCounters(rideId: string): void {
   rideEventCounters.delete(rideId);
 }
 
+// ── Regroup point ────────────────────────────────────────────────────────
+// The ride lead (or creator) can drop a "meet here" pin — a rest stop, a
+// scenic overlook, a spot to wait for stragglers. The server tracks who's
+// physically arrived (within REGROUP_ARRIVAL_RADIUS_M) so the group can see
+// live progress ("3/8 arrived") instead of everyone asking in chat.
+const REGROUP_ARRIVAL_RADIUS_M = 80;
+
+interface RegroupPoint {
+  latitude: number;
+  longitude: number;
+  label: string | null;
+  setBy: string;
+  setByName: string;
+  setAt: string;
+}
+const regroupPointByRide = new Map<string, RegroupPoint>();
+const regroupArrivals = new Map<string, Set<string>>();
+
+function clearRegroupState(rideId: string) {
+  regroupPointByRide.delete(rideId);
+  regroupArrivals.delete(rideId);
+}
+
+/** Shared by regroup:set/clear and route:updated — both are "speak for the group" actions. */
+async function isCreatorOrLead(rideId: string, userId: string): Promise<boolean> {
+  const ride = await prisma.ride.findUnique({
+    where: { id: rideId },
+    select: { creatorId: true, leadUserId: true },
+  });
+  if (!ride) return false;
+  return ride.creatorId === userId || ride.leadUserId === userId;
+}
+
+/** Called alongside evaluateGroupCohesion, right after a rider's position is cached. */
+function evaluateRegroupArrival(
+  rideId: string,
+  userId: string,
+  name: string,
+  latitude: number,
+  longitude: number,
+) {
+  const point = regroupPointByRide.get(rideId);
+  if (!point) return;
+  if (!regroupArrivals.has(rideId)) regroupArrivals.set(rideId, new Set());
+  const arrivals = regroupArrivals.get(rideId)!;
+  if (arrivals.has(userId)) return; // already counted
+
+  const distanceM = haversineDistance(latitude, longitude, point.latitude, point.longitude) * 1000;
+  if (distanceM > REGROUP_ARRIVAL_RADIUS_M) return;
+
+  arrivals.add(userId);
+  const totalExpected = rideRiderCache.get(rideId)?.size ?? 0;
+  ioInstance?.to(`ride:${rideId}`).emit("regroup:rider_arrived", {
+    userId,
+    name,
+    arrivedCount: arrivals.size,
+    totalExpected,
+    timestamp: new Date().toISOString(),
+  });
+  if (totalExpected > 0 && arrivals.size >= totalExpected) {
+    ioInstance?.to(`ride:${rideId}`).emit("regroup:complete", {
+      rideId,
+      timestamp: new Date().toISOString(),
+    });
+  }
+}
+
 // ── Ride membership authorization ───────────────────────────────────────────
 // join_ride_tracking / trigger_emergency / call:invite all need "is this user
 // actually on this ride" before joining the room, broadcasting an SOS, or
@@ -538,6 +606,7 @@ export async function broadcastRiderLocation(
     updatedAt: now,
   }).catch(() => {});
   evaluateGroupCohesion(rideId, userId, name, latitude, longitude);
+  evaluateRegroupArrival(rideId, userId, name, latitude, longitude);
 
   const io = getIO();
   if (io) {
@@ -601,6 +670,7 @@ export async function broadcastRiderLocationBatch(
     updatedAt: last.updatedAt,
   }).catch(() => {});
   evaluateGroupCohesion(rideId, userId, name, last.latitude, last.longitude);
+  evaluateRegroupArrival(rideId, userId, name, last.latitude, last.longitude);
 
   const io = getIO();
   if (io) {
@@ -701,6 +771,7 @@ export async function markRideCompleted(rideId: string): Promise<void> {
   rideRiderCache.delete(rideId);
   clearRideHealth(rideId);
   releaseRadioLock(rideId);
+  clearRegroupState(rideId);
 
   if (ioInstance) {
     ioInstance.to(`ride:${rideId}`).emit("ride-completed", { rideId });
@@ -1293,6 +1364,7 @@ export function createSocketServer(httpServer: HttpServer): Server {
             updatedAt: now,
           }).catch(() => {});
           evaluateGroupCohesion(payload.rideId, userId, userName, payload.latitude, payload.longitude);
+          evaluateRegroupArrival(payload.rideId, userId, userName, payload.latitude, payload.longitude);
 
           socket
             .to(`ride:${payload.rideId}`)
@@ -1546,7 +1618,9 @@ export function createSocketServer(httpServer: HttpServer): Server {
 
     // ── P2P voice calls (custom WebRTC signaling) ───────────────────────
     // Scope: 1:1 rider↔lead only (group mesh calling is explicitly out of
-    // scope). This channel only relays signaling messages (invite/answer/
+    // scope — the group radio section below covers the "reach everyone"
+    // case instead, via a broadcast clip rather than a live mesh). This
+    // channel only relays signaling messages (invite/answer/
     // SDP/ICE) between two sockets already both in the ride's room — the
     // actual audio is peer-to-peer once connected (a TURN relay is required
     // in front of this for callers behind carrier-grade NAT, which is the
@@ -1750,6 +1824,106 @@ export function createSocketServer(httpServer: HttpServer): Server {
       if (payload?.rideId) releaseRadioLock(payload.rideId, userId);
       ack?.({ success: true });
     });
+
+    // ── Regroup point ─────────────────────────────────────────────────
+    // Creator/lead-only — see regroupPointByRide/evaluateRegroupArrival above.
+
+    socket.on(
+      "regroup:set",
+      async (
+        payload: { rideId: string; latitude: number; longitude: number; label?: string },
+        ack?: (...args: any[]) => void,
+      ) => {
+        try {
+          const { rideId, latitude, longitude, label } = payload || ({} as any);
+          if (!rideId || typeof latitude !== "number" || typeof longitude !== "number") {
+            ack?.({ success: false, error: "rideId, latitude, and longitude are required" });
+            return;
+          }
+          if (!(await isCreatorOrLead(rideId, userId))) {
+            ack?.({ success: false, error: "Only the ride creator or lead can set a regroup point" });
+            return;
+          }
+          const point: RegroupPoint = {
+            latitude,
+            longitude,
+            label: label ?? null,
+            setBy: userId,
+            setByName: userName,
+            setAt: new Date().toISOString(),
+          };
+          regroupPointByRide.set(rideId, point);
+          regroupArrivals.set(rideId, new Set());
+          ioInstance?.to(`ride:${rideId}`).emit("regroup:point_set", point);
+          ack?.({ success: true });
+        } catch (err) {
+          console.error("[SOCKET] regroup:set error:", err);
+          ack?.({ success: false, error: "Internal error" });
+        }
+      },
+    );
+
+    socket.on(
+      "regroup:clear",
+      async (payload: { rideId: string }, ack?: (...args: any[]) => void) => {
+        try {
+          const { rideId } = payload || ({} as any);
+          if (!rideId || !(await isCreatorOrLead(rideId, userId))) {
+            ack?.({ success: false, error: "Access denied" });
+            return;
+          }
+          clearRegroupState(rideId);
+          ioInstance?.to(`ride:${rideId}`).emit("regroup:cleared", { rideId });
+          ack?.({ success: true });
+        } catch (err) {
+          console.error("[SOCKET] regroup:clear error:", err);
+          ack?.({ success: false, error: "Internal error" });
+        }
+      },
+    );
+
+    // ── Lead reroute broadcast ───────────────────────────────────────────
+    // Relays the lead's updated route to every follower so their in-app
+    // navigation doesn't keep guiding them along a path the group actually
+    // abandoned. Pure relay — the server doesn't validate route geometry,
+    // just who's allowed to broadcast one.
+
+    socket.on(
+      "route:updated",
+      async (
+        payload: {
+          rideId: string;
+          waypoints?: Array<{ latitude: number; longitude: number; name?: string }>;
+          endLat?: number;
+          endLng?: number;
+          endLocation?: string;
+          reason?: string;
+        },
+        ack?: (...args: any[]) => void,
+      ) => {
+        try {
+          const { rideId } = payload || ({} as any);
+          if (!rideId) {
+            ack?.({ success: false, error: "rideId is required" });
+            return;
+          }
+          if (!(await isCreatorOrLead(rideId, userId))) {
+            ack?.({ success: false, error: "Only the ride creator or lead can update the route for the group" });
+            return;
+          }
+          socket.to(`ride:${rideId}`).emit("route_updated", {
+            ...payload,
+            updatedBy: userId,
+            updatedByName: userName,
+            timestamp: new Date().toISOString(),
+          });
+          ack?.({ success: true });
+        } catch (err) {
+          console.error("[SOCKET] route:updated error:", err);
+          ack?.({ success: false, error: "Internal error" });
+        }
+      },
+    );
 
     // ── request_friend_locations ───────────────────────────────────────
     // Get all friend locations once (for initial map load)

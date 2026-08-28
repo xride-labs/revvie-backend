@@ -12,8 +12,8 @@ import {
   discoveryRoutes,
   chatRoutes,
   locationRoutes,
-  friendGroupRoutes,
   friendshipRoutes,
+  savedRoutes,
 } from "./index.js";
 import { ApiResponse, ErrorCode } from "../lib/utils/apiResponse.js";
 import { vi } from "vitest";
@@ -64,8 +64,8 @@ describe("all route groups are wired", () => {
   app.use("/api/discover", discoveryRoutes);
   app.use("/api/chat", chatRoutes);
   app.use("/api/location", locationRoutes);
-  app.use("/api/friend-groups", friendGroupRoutes);
   app.use("/api/friends", friendshipRoutes);
+  app.use("/api/saved", savedRoutes);
 
   app.use((_req, res) => {
     ApiResponse.notFound(res, "Endpoint not found", ErrorCode.NOT_FOUND);
@@ -84,8 +84,8 @@ describe("all route groups are wired", () => {
     "/api/discover",
     "/api/chat",
     "/api/location",
-    "/api/friend-groups",
     "/api/friends",
+    "/api/saved",
   ];
 
   it.each(basePaths)("mounts and responds for %s", async (basePath) => {

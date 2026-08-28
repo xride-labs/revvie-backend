@@ -18,7 +18,7 @@ router.use(requireAuth);
 
 /**
  * @swagger
- * /api/friend-groups:
+ * /api/friends/groups:
  *   get:
  *     summary: Get user's friend groups
  *     tags: [FriendGroups]
@@ -105,7 +105,7 @@ router.get(
 
 /**
  * @swagger
- * /api/friend-groups/{id}:
+ * /api/friends/groups/{id}:
  *   get:
  *     summary: Get friend group by ID
  *     tags: [FriendGroups]
@@ -167,7 +167,7 @@ router.get(
 
 /**
  * @swagger
- * /api/friend-groups:
+ * /api/friends/groups:
  *   post:
  *     summary: Create a friend group
  *     tags: [FriendGroups]
@@ -225,7 +225,7 @@ router.post(
 
 /**
  * @swagger
- * /api/friend-groups/{id}:
+ * /api/friends/groups/{id}:
  *   patch:
  *     summary: Update a friend group (creator only)
  *     tags: [FriendGroups]
@@ -283,7 +283,7 @@ router.patch(
 
 /**
  * @swagger
- * /api/friend-groups/{id}:
+ * /api/friends/groups/{id}:
  *   delete:
  *     summary: Delete a friend group (creator only)
  *     tags: [FriendGroups]
@@ -325,7 +325,7 @@ router.delete(
 
 /**
  * @swagger
- * /api/friend-groups/{id}/members:
+ * /api/friends/groups/{id}/members:
  *   post:
  *     summary: Add a member to the group (creator only)
  *     tags: [FriendGroups]
@@ -403,7 +403,7 @@ router.post(
 
 /**
  * @swagger
- * /api/friend-groups/{id}/members/{userId}:
+ * /api/friends/groups/{id}/members/{userId}:
  *   delete:
  *     summary: Remove a member from the group (creator or self)
  *     tags: [FriendGroups]
@@ -461,7 +461,7 @@ router.delete(
 
 /**
  * @swagger
- * /api/friend-groups/{id}/rides:
+ * /api/friends/groups/{id}/rides:
  *   post:
  *     summary: Create a ride from this friend group
  *     tags: [FriendGroups]

@@ -30,7 +30,7 @@ const listAdsQuerySchema = z.object({
 const idParamSchema = z.object({ id: z.string().min(1) });
 
 /**
- * GET /api/ads?slot=HOME_FEED
+ * GET /api/business/ads?slot=HOME_FEED
  *
  * Returns up to `limit` ads for the requested placement slot, filtered to:
  *   - status = ACTIVE
@@ -117,7 +117,7 @@ router.get(
 );
 
 /**
- * POST /api/ads/:id/impression — beacon. Best-effort; we don't fail the
+ * POST /api/business/ads/:id/impression — beacon. Best-effort; we don't fail the
  * request if the campaign is gone.
  */
 router.post(
@@ -136,7 +136,7 @@ router.post(
 );
 
 /**
- * POST /api/ads/:id/click — beacon. Same lenient handling.
+ * POST /api/business/ads/:id/click — beacon. Same lenient handling.
  */
 router.post(
   "/:id/click",

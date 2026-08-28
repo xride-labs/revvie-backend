@@ -340,7 +340,21 @@ router.get(
       }
     }
 
-    ApiResponse.success(res, { ride, participantStatus, pendingRequestCount });
+    const isFavorite = session?.user?.id
+      ? Boolean(
+          await prisma.savedRoute.findUnique({
+            where: {
+              userId_rideId: {
+                userId: session.user.id,
+                rideId: id,
+              },
+            },
+            select: { id: true },
+          }),
+        )
+      : false;
+
+    ApiResponse.success(res, { ride, participantStatus, pendingRequestCount, isFavorite });
   }),
 );
 
@@ -432,6 +446,7 @@ router.post(
       waypoints,
       routeData,
       friendGroupId,
+      privacyLevel,
     } = req.body;
 
     // The mobile client sends startLat/startLng (route origin). Mirror those
@@ -474,6 +489,7 @@ router.post(
         waypoints: waypoints ?? undefined,
         routeData: serializedRouteData,
         friendGroupId: friendGroupId ?? undefined,
+        privacyLevel: privacyLevel ?? undefined,
       },
       include: {
         creator: {
@@ -1565,6 +1581,65 @@ router.post(
       invitations,
       notificationsSent: notifications.length,
     });
+  }),
+);
+
+// ─── Ride Lifecycle: Start ───────────────────────────────────────────────────
+// Explicit "begin now" transition. Without this, a PLANNED ride only ever
+// became IN_PROGRESS via the 15-minute updateRideStatuses cron job
+// (src/jobs/scheduler.ts) once scheduledAt passed — fine for a ride
+// scheduled well ahead of time, but it meant tapping "Start Live Ride"
+// (mobile) didn't actually start anything: every telemetry route silently
+// no-ops on a non-IN_PROGRESS ride (see the `ignored: true` branches below),
+// so a quick/solo ride's location would go nowhere for up to 15 minutes.
+
+router.post(
+  "/:id/start",
+  validateParams(idParamSchema),
+  asyncHandler(async (req: Request, res: Response) => {
+    const session = (req as any).session;
+    const { id } = req.params;
+
+    const ride = await prisma.ride.findUnique({
+      where: { id },
+      select: {
+        id: true,
+        status: true,
+        creatorId: true,
+        participants: {
+          where: { userId: session.user.id, status: { in: ["ACCEPTED", "COMPLETED"] } },
+          select: { id: true },
+        },
+      },
+    });
+
+    if (!ride) return ApiResponse.notFound(res, "Ride not found", ErrorCode.RIDE_NOT_FOUND);
+
+    const isCreator = ride.creatorId === session.user.id;
+    // Mirrors the mobile "Start Live Ride" button's own visibility gate
+    // (isCreator || isAccepted) — anyone who could see that button can press it.
+    if (!isCreator && ride.participants.length === 0) {
+      return ApiResponse.forbidden(res, "Only the ride creator or an accepted participant can start this ride");
+    }
+
+    if (ride.status !== "PLANNED") {
+      // Already IN_PROGRESS (someone else just started it) is fine to treat
+      // as a no-op success — the caller's next step is "go to the live
+      // screen" either way. PAUSED/COMPLETED/CANCELLED are real errors.
+      if (ride.status === "IN_PROGRESS") {
+        return ApiResponse.success(res, { status: ride.status }, "Ride already in progress");
+      }
+      return ApiResponse.error(res, `Ride cannot be started from ${ride.status}`, 400, ErrorCode.INVALID_INPUT);
+    }
+
+    await prisma.ride.update({
+      where: { id },
+      data: { status: "IN_PROGRESS" },
+    });
+
+    getIO()?.to(`ride:${id}`).emit("ride_status_changed", { rideId: id, status: "IN_PROGRESS" });
+
+    ApiResponse.success(res, { status: "IN_PROGRESS" }, "Ride started");
   }),
 );
 

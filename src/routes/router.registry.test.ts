@@ -22,17 +22,15 @@ const ROUTERS: Array<[string, RouterLike]> = [
   ["discovery", (routes as any).discoveryRoutes],
   ["chat", (routes as any).chatRoutes],
   ["location", (routes as any).locationRoutes],
-  ["friend-group", (routes as any).friendGroupRoutes],
   ["friendship", (routes as any).friendshipRoutes],
   ["notification", (routes as any).notificationRoutes],
   ["payments", (routes as any).paymentsRoutes],
   ["event", (routes as any).eventRoutes],
   ["public", (routes as any).publicRoutes],
   ["business", (routes as any).businessRoutes],
-  ["ads", (routes as any).adsRoutes],
-  ["discount", (routes as any).discountRoutes],
   ["bulk", (routes as any).bulkRoutes],
   ["catalog", (routes as any).catalogRoutes],
+  ["saved", (routes as any).savedRoutes],
 ];
 
 const HTTP_VERBS = new Set([
@@ -56,7 +54,11 @@ export function flattenEndpoints(router: RouterLike, prefix = ""): Array<{ path:
       );
       out.push({ path: p, methods });
     } else if (layer.handle?.stack) {
-      const sub = String(layer.path ?? "/");
+      let sub = layer.path ? String(layer.path) : "";
+      if (!sub && layer.regexp) {
+        const match = layer.regexp.source?.match(/^\^\\\/([a-zA-Z0-9_\-\/]+)/);
+        if (match) sub = "/" + match[1].replace(/\\\//g, "/");
+      }
       out.push(...flattenEndpoints(layer.handle, prefix + (sub === "/" ? "" : sub)));
     }
   }
@@ -64,12 +66,12 @@ export function flattenEndpoints(router: RouterLike, prefix = ""): Array<{ path:
 }
 
 describe("router registry", () => {
-  it("exposes all 22 feature routers", () => {
+  it("exposes all 20 feature routers", () => {
     for (const [, router] of ROUTERS) {
       expect(router).toBeDefined();
       expect(Array.isArray((router as any).stack)).toBe(true);
     }
-    expect(ROUTERS).toHaveLength(22);
+    expect(ROUTERS).toHaveLength(20);
   });
 
   it("mounts no overlapping prefixes between routers", () => {
@@ -86,17 +88,15 @@ describe("router registry", () => {
       discoveryRoutes: "/api/discover",
       chatRoutes: "/api/chat",
       locationRoutes: "/api/location",
-      friendGroupRoutes: "/api/friend-groups",
       friendshipRoutes: "/api/friends",
       notificationRoutes: "/api/notifications",
       paymentsRoutes: "/api/payments",
       eventRoutes: "/api/events",
       publicRoutes: "/api/public",
       businessRoutes: "/api/business",
-      adsRoutes: "/api/ads",
-      discountRoutes: "/api/discounts",
       bulkRoutes: "/api/bulk",
       catalogRoutes: "/api/catalog",
+      savedRoutes: "/api/saved",
     };
     expect(Object.keys(expectedPrefixes)).toHaveLength(ROUTERS.length);
   });

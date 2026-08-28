@@ -274,6 +274,12 @@ export async function sendResetPasswordEmail(params: {
   name?: string | null;
   resetUrl: string;
 }): Promise<boolean> {
+  if (process.env.NODE_ENV === "development") {
+    console.log(`\n==================================`);
+    console.log(`[DEV] Password Reset Link for ${params.to} → ${params.resetUrl}`);
+    console.log(`==================================\n`);
+  }
+
   const template = buildResetPasswordTemplate({
     name: params.name,
     resetUrl: params.resetUrl,

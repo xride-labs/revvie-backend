@@ -160,6 +160,10 @@ model User {
   brandInvitesSent  BrandMember[]     @relation("BrandInviter")
   businessInquiries BusinessInquiry[] @relation("InquiriesMade")
 
+  // Saved locations & routes
+  savedLocations SavedLocation[]
+  savedRoutes    SavedRoute[]
+
   @@map("users")
 }
 
@@ -749,6 +753,9 @@ model Ride {
 
   // Denormalized summary for fast share-card render and historical browsing.
   summary RideSummary?
+
+  // Saved routes referencing this ride
+  savedByUsers SavedRoute[]
 
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
@@ -1962,3 +1969,60 @@ model ExpenseSplit {
   @@index([userId, status], map: "idx_expense_split_user_status")
   @@map("expense_splits")
 }
+
+enum SavedLocationType {
+  HOME
+  WORK
+  VIEWPOINT
+  MEETUP
+  GAS_STATION
+  FAVORITE
+  OTHER
+}
+
+model SavedLocation {
+  id        String            @id @default(cuid())
+  userId    String            @map("user_id")
+  name      String
+  address   String
+  latitude  Float
+  longitude Float
+  type      SavedLocationType @default(FAVORITE)
+  icon      String?
+  createdAt DateTime          @default(now()) @map("created_at")
+  updatedAt DateTime          @updatedAt @map("updated_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId], map: "saved_locations_user_idx")
+  @@map("saved_locations")
+}
+
+model SavedRoute {
+  id            String   @id @default(cuid())
+  userId        String   @map("user_id")
+  rideId        String?  @map("ride_id") // Optional link to originating ride
+  title         String
+  description   String?
+  startLocation String   @map("start_location")
+  startLat      Float    @map("start_lat")
+  startLng      Float    @map("start_lng")
+  endLocation   String?  @map("end_location")
+  endLat        Float?   @map("end_lat")
+  endLng        Float?   @map("end_lng")
+  waypoints     Json?    // [{latitude, longitude, name?, address?}]
+  routeData     String?  @map("route_data") @db.Text // Encoded geometry polyline
+  distance      Float?   // Distance in km
+  duration      Int?     // Duration in minutes
+  isFavorite    Boolean  @default(true) @map("is_favorite")
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  user User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  ride Ride? @relation(fields: [rideId], references: [id], onDelete: SetNull)
+
+  @@unique([userId, rideId], map: "saved_routes_user_ride_unique")
+  @@index([userId], map: "saved_routes_user_idx")
+  @@map("saved_routes")
+}
+
