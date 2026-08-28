@@ -131,6 +131,35 @@ describe("Ride telemetry routes", () => {
       expect(res.status).toBe(400);
     });
 
+    it("accepts CLLocation's -1 'unavailable' sentinel for speed/heading instead of rejecting the ping", async () => {
+      const { user, token } = await createTestUser();
+      const ride = await createTestRide(user.id, { status: "IN_PROGRESS" });
+
+      const res = await request(app)
+        .post(`/api/rides/${ride.id}/telemetry`)
+        .set("Authorization", `Bearer ${token}`)
+        .send({ latitude: 40.7128, longitude: -74.006, speed: -1, heading: -1 });
+
+      expect(res.status).toBe(200);
+
+      // Normalized to "unknown" (null), not stored as a literal -1 speed.
+      const stored = await prisma.userLiveLocation.findUnique({ where: { userId: user.id } });
+      expect(stored?.speed).toBeNull();
+      expect(stored?.heading).toBeNull();
+    });
+
+    it("still rejects a genuinely invalid negative speed (anything other than the -1 sentinel)", async () => {
+      const { user, token } = await createTestUser();
+      const ride = await createTestRide(user.id, { status: "IN_PROGRESS" });
+
+      const res = await request(app)
+        .post(`/api/rides/${ride.id}/telemetry`)
+        .set("Authorization", `Bearer ${token}`)
+        .send({ latitude: 40.7128, longitude: -74.006, speed: -5 });
+
+      expect(res.status).toBe(400);
+    });
+
     it("is rate-limited per (user, ride) — not the blanket IP limiter", async () => {
       const { user, token } = await createTestUser();
       const ride = await createTestRide(user.id, { status: "IN_PROGRESS" });

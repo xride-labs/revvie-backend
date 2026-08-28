@@ -167,7 +167,9 @@ describe("Group ride live tracking (multi-socket)", () => {
 
       // A late joiner after A's disconnect should no longer see A in the
       // cached snapshot — confirms removeCachedRider actually ran.
-      const socketC = await connectTestSocket((await createTestUser()).token);
+      const lateJoiner = await createTestUser();
+      await addRideParticipant(lateJoiner.user.id, ride.id, "ACCEPTED");
+      const socketC = await connectTestSocket(lateJoiner.token);
       try {
         const ack = await emitWithAck<{ riders: any[] }>(socketC, "join_ride_tracking", {
           rideId: ride.id,
@@ -178,6 +180,25 @@ describe("Group ride live tracking (multi-socket)", () => {
       }
     } finally {
       socketB.disconnect();
+    }
+  });
+
+  it("rejects join_ride_tracking from someone who isn't actually on the ride", async () => {
+    const creator = await createTestUser();
+    const outsider = await createTestUser();
+    const ride = await createTestRide(creator.user.id, { status: "IN_PROGRESS" });
+
+    const outsiderSocket = await connectTestSocket(outsider.token);
+    try {
+      const ack = await emitWithAck<{ success: boolean; riders?: any[] }>(
+        outsiderSocket,
+        "join_ride_tracking",
+        { rideId: ride.id },
+      );
+      expect(ack.success).toBe(false);
+      expect(ack.riders).toBeUndefined();
+    } finally {
+      outsiderSocket.disconnect();
     }
   });
 });

@@ -48,6 +48,12 @@ const router = Router();
 // All ride routes require authentication
 router.use(requireAuth);
 
+// Sentinel thrown inside the /:id/end transaction when the atomic claim
+// (tx.ride.updateMany status guard) finds the ride was already completed by
+// a concurrent request — lets the outer catch distinguish "lost the race,
+// respond 409" from a genuine failure that should bubble to asyncHandler.
+class RideAlreadyEndedError extends Error {}
+
 /**
  * @swagger
  * /api/rides:
@@ -1016,56 +1022,72 @@ router.post(
       routeGeoJson: req.body.routeGeoJson,
     });
 
-    const trackingData = await prisma.rideTrackingData.upsert({
-      where: { rideId: id },
-      create: {
-        rideId: id,
-        actualStartTime: req.body.actualStartTime
-          ? new Date(req.body.actualStartTime)
-          : null,
-        actualEndTime: req.body.actualEndTime
-          ? new Date(req.body.actualEndTime)
-          : null,
-        totalDurationMin: req.body.totalDurationMin,
-        totalDistanceKm: req.body.totalDistanceKm,
-        maxSpeedKmh: req.body.maxSpeedKmh,
-        avgSpeedKmh: req.body.avgSpeedKmh,
-        elevationGainM: resolvedElevationGain,
-        routeGeoJson: req.body.routeGeoJson,
-        weatherNotes: req.body.weatherNotes,
-        riderNotes: req.body.riderNotes,
-        conditions: req.body.conditions,
-      },
-      update: {
-        actualStartTime: req.body.actualStartTime
-          ? new Date(req.body.actualStartTime)
-          : undefined,
-        actualEndTime: req.body.actualEndTime
-          ? new Date(req.body.actualEndTime)
-          : undefined,
-        totalDurationMin: req.body.totalDurationMin,
-        totalDistanceKm: req.body.totalDistanceKm,
-        maxSpeedKmh: req.body.maxSpeedKmh,
-        avgSpeedKmh: req.body.avgSpeedKmh,
-        elevationGainM: resolvedElevationGain ?? undefined,
-        routeGeoJson: req.body.routeGeoJson,
-        weatherNotes: req.body.weatherNotes,
-        riderNotes: req.body.riderNotes,
-        conditions: req.body.conditions,
-      },
-    });
+    const createData = {
+      rideId: id,
+      actualStartTime: req.body.actualStartTime
+        ? new Date(req.body.actualStartTime)
+        : null,
+      actualEndTime: req.body.actualEndTime
+        ? new Date(req.body.actualEndTime)
+        : null,
+      totalDurationMin: req.body.totalDurationMin,
+      totalDistanceKm: req.body.totalDistanceKm,
+      maxSpeedKmh: req.body.maxSpeedKmh,
+      avgSpeedKmh: req.body.avgSpeedKmh,
+      elevationGainM: resolvedElevationGain,
+      routeGeoJson: req.body.routeGeoJson,
+      weatherNotes: req.body.weatherNotes,
+      riderNotes: req.body.riderNotes,
+      conditions: req.body.conditions,
+    };
+    const updateFields = {
+      actualStartTime: req.body.actualStartTime
+        ? new Date(req.body.actualStartTime)
+        : undefined,
+      totalDurationMin: req.body.totalDurationMin,
+      totalDistanceKm: req.body.totalDistanceKm,
+      maxSpeedKmh: req.body.maxSpeedKmh,
+      avgSpeedKmh: req.body.avgSpeedKmh,
+      elevationGainM: resolvedElevationGain ?? undefined,
+      routeGeoJson: req.body.routeGeoJson,
+      weatherNotes: req.body.weatherNotes,
+      riderNotes: req.body.riderNotes,
+      conditions: req.body.conditions,
+    };
 
-    // Treat the first time we receive an `actualEndTime` for this ride as
-    // ride completion → award XP + check the "First Ride" badge for any
-    // accepted participant who hasn't been credited yet. We use the user's
-    // total completed-ride count as the "first ride" trigger so re-uploads
-    // don't double-award.
-    const justFinished =
-      req.body.actualEndTime &&
-      (await prisma.rideTrackingData.findUnique({
-        where: { rideId: id },
-        select: { actualEndTime: true },
-      }))?.actualEndTime?.getTime() === new Date(req.body.actualEndTime).getTime();
+    // "First time this ride's tracking record actually transitions from no
+    // actualEndTime to having one" — NOT "does the stored value match what
+    // we just sent," which is true again on every retry of the same upload
+    // and previously re-triggered awardXp('RIDE_COMPLETED') on each one.
+    let trackingData;
+    let justFinished = false;
+    try {
+      // No row yet for this ride — this call itself is the only writer that
+      // can create it (rideId is unique), so if it succeeds, this request
+      // uniquely owns "first ever upload" for this ride.
+      trackingData = await prisma.rideTrackingData.create({ data: createData });
+      justFinished = Boolean(req.body.actualEndTime);
+    } catch (err: any) {
+      if (err?.code !== "P2002") throw err;
+      if (req.body.actualEndTime) {
+        // Atomic claim: only succeeds if actualEndTime is still unset,
+        // so two concurrent uploads with the same end time can't both
+        // "win" the transition.
+        const claim = await prisma.rideTrackingData.updateMany({
+          where: { rideId: id, actualEndTime: null },
+          data: { ...updateFields, actualEndTime: new Date(req.body.actualEndTime) },
+        });
+        justFinished = claim.count === 1;
+        if (!justFinished) {
+          // Already had an end time (or lost the race) — plain idempotent
+          // field update, no completion side-effects.
+          await prisma.rideTrackingData.update({ where: { rideId: id }, data: updateFields });
+        }
+      } else {
+        await prisma.rideTrackingData.update({ where: { rideId: id }, data: updateFields });
+      }
+      trackingData = await prisma.rideTrackingData.findUniqueOrThrow({ where: { rideId: id } });
+    }
 
     if (justFinished) {
       await awardXp(session.user.id, "RIDE_COMPLETED", `ride ${id}`);
@@ -1171,7 +1193,25 @@ router.post(
       routeGeoJson: req.body.routeGeoJson,
     });
 
-    const result = await prisma.$transaction(async (tx) => {
+    let result;
+    try {
+      result = await prisma.$transaction(async (tx) => {
+        // 0. Atomically claim the ride before doing any other work. The
+        //    earlier status check above (line ~1161) reads outside this
+        //    transaction, so two concurrent end-ride requests (a
+        //    double-tap, or a client retry racing the original) could both
+        //    observe IN_PROGRESS and both reach here — updateMany's WHERE
+        //    guard (not expressible on a plain unique-id `update`) makes
+        //    only one of them actually flip the status, so only one runs
+        //    the summary/XP/badge logic below.
+        const claim = await tx.ride.updateMany({
+          where: { id, status: { notIn: ["COMPLETED", "CANCELLED"] } },
+          data: { status: "COMPLETED" },
+        });
+        if (claim.count === 0) {
+          throw new RideAlreadyEndedError();
+        }
+
       // 1. Close any break that's still open. We don't surface a separate
       //    error for this — the user pressing "End Ride" implicitly ends
       //    whatever they're currently on.
@@ -1309,8 +1349,14 @@ router.post(
         },
       });
 
-      return { ride: updatedRide, trackingData, summary: persistedSummary };
-    });
+        return { ride: updatedRide, trackingData, summary: persistedSummary };
+      });
+    } catch (err) {
+      if (err instanceof RideAlreadyEndedError) {
+        return ApiResponse.conflict(res, "Ride has already ended");
+      }
+      throw err;
+    }
 
     // 8. Award XP + first-ride badge to the creator. Outside the transaction
     //    so a downstream notification failure can't roll back the ride end.
@@ -1953,8 +1999,24 @@ const rideTelemetrySchema = z.object({
   latitude: z.number().min(-90).max(90),
   longitude: z.number().min(-180).max(180),
   altitude: z.number().optional().nullable(),
-  heading: z.number().min(0).max(360).optional().nullable(),
-  speed: z.number().min(0).optional().nullable(),
+  // CLLocation/expo-location legitimately report -1 for "heading/speed
+  // unavailable" (not an error state, just no fix yet) — accept it as the
+  // sentinel it is and normalize to null, rather than rejecting the whole
+  // ping with a 400. It used to be silently lost forever: the client would
+  // queue-and-retry a rejected ping, which fails identically every time.
+  heading: z
+    .number()
+    .min(-1)
+    .max(360)
+    .optional()
+    .nullable()
+    .transform((v) => (v === -1 ? null : v)),
+  speed: z
+    .number()
+    .min(-1)
+    .optional()
+    .nullable()
+    .transform((v) => (v === -1 ? null : v)),
   accuracy: z.number().min(0).optional().nullable(),
   battery: z.number().min(0).max(100).optional().nullable(),
   isMoving: z.boolean().optional(),

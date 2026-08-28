@@ -218,6 +218,28 @@ function isRideCompleted(rideId: string): boolean {
   return true;
 }
 
+// ── Ride membership authorization ───────────────────────────────────────────
+// join_ride_tracking / trigger_emergency / call:invite all need "is this user
+// actually on this ride" before joining the room, broadcasting an SOS, or
+// ringing someone — none of them checked this before (unlike the analogous
+// join_conversation, which calls ChatService.isParticipant). Without it, any
+// authenticated user who obtains a rideId (shared link, screenshot, guessed
+// id) could join a stranger's ride room and read their live location, or
+// spam a fabricated SOS to real participants.
+async function isRideParticipant(rideId: string, userId: string): Promise<boolean> {
+  const ride = await prisma.ride.findUnique({
+    where: { id: rideId },
+    select: { creatorId: true },
+  });
+  if (!ride) return false;
+  if (ride.creatorId === userId) return true;
+  const participant = await prisma.rideParticipant.findFirst({
+    where: { rideId, userId, status: { in: ["ACCEPTED", "COMPLETED"] } },
+    select: { id: true },
+  });
+  return Boolean(participant);
+}
+
 // ─── Module-scope io reference ───────────────────────────────────────────────
 // Routes need to emit ride lifecycle events (e.g. `ride-completed`) without
 // holding the http server. `getIO()` returns the live instance after
@@ -1103,6 +1125,12 @@ export function createSocketServer(httpServer: HttpServer): Server {
       ack?: (...args: any[]) => void,
     ) => {
       try {
+        if (!(await isRideParticipant(payload.rideId, userId))) {
+          socket.emit("error", { event: "join_ride_tracking", message: "Access denied" });
+          ack?.({ success: false, error: "Access denied" });
+          return;
+        }
+
         socket.join(`ride:${payload.rideId}`);
 
         // Track which rides this socket is in for disconnect cleanup
@@ -1186,6 +1214,11 @@ export function createSocketServer(httpServer: HttpServer): Server {
 
       if (typeof latitude !== "number" || typeof longitude !== "number") {
         ack?.({ success: false, error: "latitude and longitude are required" });
+        return;
+      }
+
+      if (!(await isRideParticipant(payload.rideId, userId))) {
+        ack?.({ success: false, error: "Access denied" });
         return;
       }
 
@@ -1302,6 +1335,18 @@ export function createSocketServer(httpServer: HttpServer): Server {
           }
           if (toUserId === userId) {
             ack?.({ success: false, error: "Cannot call yourself" });
+            return;
+          }
+          // Scoped to "both people are actually on this ride" — without
+          // this, any authenticated user could ring any other online user
+          // by passing an arbitrary/unrelated rideId, regardless of shared
+          // ride membership.
+          const [callerAllowed, calleeAllowed] = await Promise.all([
+            isRideParticipant(rideId, userId),
+            isRideParticipant(rideId, toUserId),
+          ]);
+          if (!callerAllowed || !calleeAllowed) {
+            ack?.({ success: false, error: "Access denied" });
             return;
           }
           if (activeCallsByUser.has(userId)) {

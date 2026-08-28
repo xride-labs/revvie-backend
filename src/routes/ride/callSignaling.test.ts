@@ -5,7 +5,7 @@
  * test, just the signaling state machine.
  */
 
-import { createTestUser, createTestRide, cleanupTestData } from "../../test/utils";
+import { createTestUser, createTestRide, addRideParticipant, cleanupTestData } from "../../test/utils";
 import {
   startSocketTestServer,
   stopSocketTestServer,
@@ -32,6 +32,7 @@ describe("P2P call signaling", () => {
     const caller = await createTestUser();
     const callee = await createTestUser();
     const ride = await createTestRide(caller.user.id, { status: "IN_PROGRESS" });
+    await addRideParticipant(callee.user.id, ride.id, "ACCEPTED");
 
     const callerSocket = await connectTestSocket(caller.token);
     const calleeSocket = await connectTestSocket(callee.token);
@@ -79,6 +80,7 @@ describe("P2P call signaling", () => {
     const caller = await createTestUser();
     const callee = await createTestUser();
     const ride = await createTestRide(caller.user.id, { status: "IN_PROGRESS" });
+    await addRideParticipant(callee.user.id, ride.id, "ACCEPTED");
 
     const callerSocket = await connectTestSocket(caller.token);
     const calleeSocket = await connectTestSocket(callee.token);
@@ -113,6 +115,8 @@ describe("P2P call signaling", () => {
     const callee = await createTestUser();
     const thirdParty = await createTestUser();
     const ride = await createTestRide(caller.user.id, { status: "IN_PROGRESS" });
+    await addRideParticipant(callee.user.id, ride.id, "ACCEPTED");
+    await addRideParticipant(thirdParty.user.id, ride.id, "ACCEPTED");
 
     const callerSocket = await connectTestSocket(caller.token);
     const calleeSocket = await connectTestSocket(callee.token);
@@ -139,6 +143,7 @@ describe("P2P call signaling", () => {
     const caller = await createTestUser();
     const offlineUser = await createTestUser();
     const ride = await createTestRide(caller.user.id, { status: "IN_PROGRESS" });
+    await addRideParticipant(offlineUser.user.id, ride.id, "ACCEPTED");
 
     const callerSocket = await connectTestSocket(caller.token);
     try {
@@ -157,6 +162,7 @@ describe("P2P call signaling", () => {
     const caller = await createTestUser();
     const callee = await createTestUser();
     const ride = await createTestRide(caller.user.id, { status: "IN_PROGRESS" });
+    await addRideParticipant(callee.user.id, ride.id, "ACCEPTED");
 
     const callerSocket = await connectTestSocket(caller.token);
     const calleeSocket = await connectTestSocket(callee.token);
@@ -176,6 +182,7 @@ describe("P2P call signaling", () => {
 
     // State is fully cleared — the callee can now be invited into a new call.
     const thirdParty = await createTestUser();
+    await addRideParticipant(thirdParty.user.id, ride.id, "ACCEPTED");
     const thirdSocket: ClientSocket = await connectTestSocket(thirdParty.token);
     try {
       const ack = await emitWithAck<{ success: boolean }>(thirdSocket, "call:invite", {
@@ -185,6 +192,35 @@ describe("P2P call signaling", () => {
       expect(ack.success).toBe(true);
     } finally {
       thirdSocket.disconnect();
+      calleeSocket.disconnect();
+    }
+  });
+
+  it("rejects a call scoped to a ride neither party is actually on", async () => {
+    const caller = await createTestUser();
+    const callee = await createTestUser();
+    // Both online and both real users — but not participants of this ride.
+    const ride = await createTestRide((await createTestUser()).user.id, { status: "IN_PROGRESS" });
+
+    const callerSocket = await connectTestSocket(caller.token);
+    const calleeSocket = await connectTestSocket(callee.token);
+
+    try {
+      let receivedIncoming = false;
+      calleeSocket.once("call:incoming", () => {
+        receivedIncoming = true;
+      });
+
+      const ack = await emitWithAck<{ success: boolean }>(callerSocket, "call:invite", {
+        toUserId: callee.user.id,
+        rideId: ride.id,
+      });
+      expect(ack.success).toBe(false);
+
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      expect(receivedIncoming).toBe(false);
+    } finally {
+      callerSocket.disconnect();
       calleeSocket.disconnect();
     }
   });
