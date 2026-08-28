@@ -31,6 +31,8 @@ import {
   markRideCompleted,
   broadcastRiderLocation,
   broadcastRiderLocationBatch,
+  getRideEventCounters,
+  clearRideEventCounters,
   getIO,
 } from "../../lib/socket.js";
 import { LocationService } from "../../services/location.service.js";
@@ -1300,6 +1302,11 @@ router.post(
         ? clientIdleSec
         : summary.idleTimeSec;
 
+      // 5b. Group Ride Report — read (not clear yet; cleared after this
+      //     transaction commits, alongside markRideCompleted below) the
+      //     tallies socket.ts accumulated over the ride's lifetime.
+      const eventCounters = getRideEventCounters(id);
+
       // 6. Persist the snapshot summary.
       const persistedSummary = await tx.rideSummary.upsert({
         where: { rideId: id },
@@ -1317,6 +1324,9 @@ router.post(
           score: summary.score,
           highlights: summary.highlights,
           badges: summary.badges,
+          sosCount: eventCounters.sosCount,
+          fallingBehindEvents: eventCounters.fallingBehindEvents,
+          unresponsiveEvents: eventCounters.unresponsiveEvents,
         },
         update: {
           totalDistanceKm: summary.totalDistanceKm,
@@ -1331,6 +1341,9 @@ router.post(
           score: summary.score,
           highlights: summary.highlights,
           badges: summary.badges,
+          sosCount: eventCounters.sosCount,
+          fallingBehindEvents: eventCounters.fallingBehindEvents,
+          unresponsiveEvents: eventCounters.unresponsiveEvents,
           generatedAt: now,
         },
       });
@@ -1372,8 +1385,10 @@ router.post(
       console.error("[RIDE_END] post-completion rewards failed", err);
     }
 
-    // 9. Notify everyone in the ride room and clear the rider cache.
+    // 9. Notify everyone in the ride room, clear the rider cache, and drop
+    //    the Group Ride Report tallies now that they're snapshotted above.
     await markRideCompleted(id);
+    clearRideEventCounters(id);
 
     ApiResponse.success(res, result);
   }),

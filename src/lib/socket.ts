@@ -12,6 +12,7 @@ import type { IAttachment } from "../models/chat.model.js";
 import { sendPushToUsers, channelForType, categoryForType } from "./push.js";
 import prisma from "./prisma.js";
 import { NotificationType } from "@prisma/client";
+import { haversineDistance } from "./utils/geo.js";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -173,6 +174,7 @@ async function removeCachedRider(rideId: string, userId: string) {
     await redisCacheClient.hdel(`ride:${rideId}:riders`, userId).catch(() => {});
   }
   rideRiderCache.get(rideId)?.delete(userId);
+  clearHealthState(rideId, userId);
 }
 
 // Track which rides each socket is in so we can clean up on disconnect
@@ -200,6 +202,34 @@ function endCallForBothSides(userId: string): ActiveCall | undefined {
   return call;
 }
 
+// ── Group radio (half-duplex push-to-talk broadcast) ────────────────────────
+// Distinct from the 1:1 P2P call signaling above: this is a many-listener
+// broadcast of a short recorded voice clip to everyone in the ride room, like
+// a real two-way radio, not a call. Only one rider can hold the channel at a
+// time — enforced server-side via `radioBusyByRide` — and clips are relayed
+// in-memory only, never persisted, matching how a real radio transmission
+// isn't a permanent record the way a chat message is.
+const MAX_RADIO_CLIP_BASE64_CHARS = 1_100_000; // ~800KB raw audio
+const RADIO_MAX_HOLD_MS = 20_000; // safety backstop if a client never sends audio or cancels
+
+interface RadioLock {
+  userId: string;
+  name: string;
+  startedAt: number;
+  safetyTimer: ReturnType<typeof setTimeout>;
+}
+const radioBusyByRide = new Map<string, RadioLock>();
+
+/** Releases the channel and notifies the room. If `expectedUserId` is given, only releases when that user actually holds it (guards against a stale/late cancel racing a fresh start). */
+function releaseRadioLock(rideId: string, expectedUserId?: string) {
+  const lock = radioBusyByRide.get(rideId);
+  if (!lock) return;
+  if (expectedUserId && lock.userId !== expectedUserId) return;
+  clearTimeout(lock.safetyTimer);
+  radioBusyByRide.delete(rideId);
+  ioInstance?.to(`ride:${rideId}`).emit("radio:transmission_ended", { userId: lock.userId });
+}
+
 // ── Completed-ride tombstones ──────────────────────────────────────────────
 // When a ride ends we add it here for ~30min. Late `update_location` packets
 // from clients that haven't received the `ride-completed` event yet are
@@ -216,6 +246,193 @@ function isRideCompleted(rideId: string): boolean {
     return false;
   }
   return true;
+}
+
+// ── Group cohesion + rider-health detection ─────────────────────────────────
+// Two distinct "something's wrong with a rider" signals a group ride needs
+// that individual solo tracking never had to worry about:
+//
+//   1. "Falling behind" — a rider has drifted far from the rest of the group.
+//      Reference point is the centroid of every OTHER currently-tracked
+//      rider's last-known position (not the lead specifically — a lead is
+//      optional, and in practice a scattered group's "center of mass" is a
+//      more honest signal than distance-to-one-person).
+//   2. "Unresponsive" — a rider's socket is still connected (a hard
+//      disconnect is handled immediately below, in the `disconnect` handler)
+//      but no location fix has arrived in a while: GPS stalled, the app
+//      froze, or the phone locked without background-location permission.
+//
+// Both use hysteresis (a higher ENTER threshold than EXIT/recovery) and a
+// sustained-duration requirement before firing, so a single noisy GPS fix or
+// a momentary radio dead-zone doesn't spam the group with false alarms.
+const FALLING_BEHIND_ENTER_M = 2000;
+const FALLING_BEHIND_EXIT_M = 1200;
+// Real Date.now()-driven timers, same as completedRideIds' tombstone TTL
+// elsewhere in this file — production values would make an integration test
+// wait 45+ real seconds per case, so (mirroring the NODE_ENV==="test" gate
+// server.ts already uses to skip starting a live server in tests) the sweep
+// runs fast and the sustained/staleness windows shrink to milliseconds.
+const IS_TEST = process.env.NODE_ENV === "test";
+const FALLING_BEHIND_SUSTAINED_MS = IS_TEST ? 150 : 45_000;
+const UNRESPONSIVE_THRESHOLD_MS = IS_TEST ? 150 : 45_000;
+const UNRESPONSIVE_SWEEP_INTERVAL_MS = IS_TEST ? 40 : 15_000;
+// A rider whose last fix is older than this is treated as "not really here"
+// for centroid purposes — otherwise a ghost/stale cache entry could drag the
+// group's reference point toward a position nobody is actually near anymore.
+const CENTROID_STALE_CUTOFF_MS = 120_000;
+
+interface RiderHealthState {
+  fallingBehindSince: number | null;
+  flaggedFallingBehind: boolean;
+  flaggedUnresponsive: boolean;
+}
+const rideRiderHealth = new Map<string, Map<string, RiderHealthState>>();
+
+function getHealthState(rideId: string, userId: string): RiderHealthState {
+  if (!rideRiderHealth.has(rideId)) rideRiderHealth.set(rideId, new Map());
+  const riders = rideRiderHealth.get(rideId)!;
+  if (!riders.has(userId)) {
+    riders.set(userId, {
+      fallingBehindSince: null,
+      flaggedFallingBehind: false,
+      flaggedUnresponsive: false,
+    });
+  }
+  return riders.get(userId)!;
+}
+
+function clearHealthState(rideId: string, userId: string) {
+  rideRiderHealth.get(rideId)?.delete(userId);
+}
+
+function clearRideHealth(rideId: string) {
+  rideRiderHealth.delete(rideId);
+}
+
+/**
+ * Called right after a rider's position is cached. Reads directly from the
+ * in-memory `rideRiderCache` (not `getCachedRiders`'s Redis-preferring path)
+ * — this is a soft-realtime UX signal, not the authoritative late-joiner
+ * snapshot, so the tiny staleness window on a multi-instance deployment
+ * (a rider's latest ping landed on a different instance than the one running
+ * this check) is an acceptable tradeoff for avoiding a Redis round-trip on
+ * every single location tick.
+ */
+function evaluateGroupCohesion(
+  rideId: string,
+  userId: string,
+  name: string,
+  latitude: number,
+  longitude: number,
+) {
+  const riders = rideRiderCache.get(rideId);
+  if (!riders || riders.size < 2) return; // solo, or no one else cached yet
+
+  const now = Date.now();
+  let sumLat = 0;
+  let sumLon = 0;
+  let count = 0;
+  for (const [otherId, cached] of riders) {
+    if (otherId === userId) continue;
+    if (now - Date.parse(cached.updatedAt) > CENTROID_STALE_CUTOFF_MS) continue;
+    sumLat += cached.latitude;
+    sumLon += cached.longitude;
+    count++;
+  }
+  if (count === 0) return;
+
+  const centroidLat = sumLat / count;
+  const centroidLon = sumLon / count;
+  const distanceM = haversineDistance(latitude, longitude, centroidLat, centroidLon) * 1000;
+
+  const health = getHealthState(rideId, userId);
+  if (distanceM >= FALLING_BEHIND_ENTER_M) {
+    if (health.fallingBehindSince == null) health.fallingBehindSince = now;
+    const sustainedMs = now - health.fallingBehindSince;
+    if (!health.flaggedFallingBehind && sustainedMs >= FALLING_BEHIND_SUSTAINED_MS) {
+      health.flaggedFallingBehind = true;
+      bumpRideEventCounter(rideId, "fallingBehindEvents");
+      ioInstance?.to(`ride:${rideId}`).emit("rider_falling_behind", {
+        userId,
+        name,
+        distanceM: Math.round(distanceM),
+        timestamp: new Date().toISOString(),
+      });
+    }
+  } else if (distanceM <= FALLING_BEHIND_EXIT_M) {
+    health.fallingBehindSince = null;
+    if (health.flaggedFallingBehind) {
+      health.flaggedFallingBehind = false;
+      ioInstance?.to(`ride:${rideId}`).emit("rider_back_on_track", {
+        userId,
+        timestamp: new Date().toISOString(),
+      });
+    }
+  }
+  // Otherwise we're in the hysteresis band between EXIT and ENTER — leave
+  // state as-is rather than flapping.
+}
+
+/**
+ * Periodic sweep for riders who are still connected but have gone quiet.
+ * Same in-memory-cache caveat as evaluateGroupCohesion above applies here —
+ * a genuinely distributed deployment would need this sweep (and the cache it
+ * reads) backed by Redis to catch a rider whose last ping landed on a
+ * different instance.
+ */
+function sweepUnresponsiveRiders() {
+  const now = Date.now();
+  for (const [rideId, riders] of rideRiderCache) {
+    for (const [userId, cached] of riders) {
+      const health = getHealthState(rideId, userId);
+      const staleMs = now - Date.parse(cached.updatedAt);
+      if (staleMs >= UNRESPONSIVE_THRESHOLD_MS) {
+        if (!health.flaggedUnresponsive) {
+          health.flaggedUnresponsive = true;
+          bumpRideEventCounter(rideId, "unresponsiveEvents");
+          ioInstance?.to(`ride:${rideId}`).emit("rider_unresponsive", {
+            userId,
+            name: cached.name,
+            lastSeenAt: cached.updatedAt,
+          });
+        }
+      } else if (health.flaggedUnresponsive) {
+        health.flaggedUnresponsive = false;
+        ioInstance?.to(`ride:${rideId}`).emit("rider_responsive_again", {
+          userId,
+          timestamp: new Date().toISOString(),
+        });
+      }
+    }
+  }
+}
+
+// ── Post-ride group event counters ──────────────────────────────────────────
+// Tallies how many times each signal fired over the life of a ride, so the
+// post-ride summary can show a real "Group Ride Report" (SOS count, riders
+// who fell behind, riders who went unresponsive) instead of that context
+// being gone the moment the ride ends. Read once by the /:id/end route and
+// cleared right after — see ride.routes.ts.
+export interface RideEventCounters {
+  fallingBehindEvents: number;
+  unresponsiveEvents: number;
+  sosCount: number;
+}
+const rideEventCounters = new Map<string, RideEventCounters>();
+
+function bumpRideEventCounter(rideId: string, key: keyof RideEventCounters) {
+  if (!rideEventCounters.has(rideId)) {
+    rideEventCounters.set(rideId, { fallingBehindEvents: 0, unresponsiveEvents: 0, sosCount: 0 });
+  }
+  rideEventCounters.get(rideId)![key]++;
+}
+
+export function getRideEventCounters(rideId: string): RideEventCounters {
+  return rideEventCounters.get(rideId) ?? { fallingBehindEvents: 0, unresponsiveEvents: 0, sosCount: 0 };
+}
+
+export function clearRideEventCounters(rideId: string): void {
+  rideEventCounters.delete(rideId);
 }
 
 // ── Ride membership authorization ───────────────────────────────────────────
@@ -245,6 +462,10 @@ async function isRideParticipant(rideId: string, userId: string): Promise<boolea
 // holding the http server. `getIO()` returns the live instance after
 // `createSocketServer` has run, or null in test environments.
 let ioInstance: Server | null = null;
+// Guards against leaking a duplicate sweep interval if createSocketServer is
+// invoked more than once in the same process (the test harness does this
+// once per test file — see socketTestServer.ts).
+let unresponsiveSweepTimer: ReturnType<typeof setInterval> | null = null;
 
 export function getIO(): Server | null {
   return ioInstance;
@@ -316,6 +537,7 @@ export async function broadcastRiderLocation(
     isMoving: isMoving ?? false,
     updatedAt: now,
   }).catch(() => {});
+  evaluateGroupCohesion(rideId, userId, name, latitude, longitude);
 
   const io = getIO();
   if (io) {
@@ -378,6 +600,7 @@ export async function broadcastRiderLocationBatch(
     isMoving: last.isMoving,
     updatedAt: last.updatedAt,
   }).catch(() => {});
+  evaluateGroupCohesion(rideId, userId, name, last.latitude, last.longitude);
 
   const io = getIO();
   if (io) {
@@ -476,6 +699,8 @@ export async function markRideCompleted(rideId: string): Promise<void> {
     redisCacheClient.del(`ride:${rideId}:riders`).catch(() => {});
   }
   rideRiderCache.delete(rideId);
+  clearRideHealth(rideId);
+  releaseRadioLock(rideId);
 
   if (ioInstance) {
     ioInstance.to(`ride:${rideId}`).emit("ride-completed", { rideId });
@@ -509,6 +734,10 @@ export function createSocketServer(httpServer: HttpServer): Server {
   });
 
   ioInstance = io;
+
+  if (unresponsiveSweepTimer) clearInterval(unresponsiveSweepTimer);
+  unresponsiveSweepTimer = setInterval(sweepUnresponsiveRiders, UNRESPONSIVE_SWEEP_INTERVAL_MS);
+  unresponsiveSweepTimer.unref?.();
 
   // ── Optional Redis adapter for horizontal scaling ────────────────────────
 
@@ -1063,6 +1292,7 @@ export function createSocketServer(httpServer: HttpServer): Server {
             isMoving: payload.isMoving ?? false,
             updatedAt: now,
           }).catch(() => {});
+          evaluateGroupCohesion(payload.rideId, userId, userName, payload.latitude, payload.longitude);
 
           socket
             .to(`ride:${payload.rideId}`)
@@ -1232,6 +1462,8 @@ export function createSocketServer(httpServer: HttpServer): Server {
         message: payload.message || "Emergency! I need help!",
         timestamp: new Date().toISOString(),
       };
+
+      bumpRideEventCounter(payload.rideId, "sosCount");
 
       // 1. Immediate socket broadcast to everyone already in the ride room.
       socket
@@ -1436,6 +1668,89 @@ export function createSocketServer(httpServer: HttpServer): Server {
       ack?.({ success: true });
     });
 
+    // ── Group radio (half-duplex push-to-talk broadcast) ────────────────
+    // See the radioBusyByRide/releaseRadioLock definitions above for the
+    // channel-lock model. Recording itself happens client-side; the server
+    // only ever sees the final clip (radio:audio), not a live stream.
+
+    socket.on(
+      "radio:start",
+      async (payload: { rideId: string }, ack?: (...args: any[]) => void) => {
+        try {
+          const { rideId } = payload || ({} as any);
+          if (!rideId) {
+            ack?.({ success: false, error: "rideId is required" });
+            return;
+          }
+          if (!(await isRideParticipant(rideId, userId))) {
+            ack?.({ success: false, error: "Access denied" });
+            return;
+          }
+          const existing = radioBusyByRide.get(rideId);
+          if (existing) {
+            ack?.({
+              success: false,
+              error: `${existing.name} is talking`,
+              code: "CHANNEL_BUSY",
+              busyUserId: existing.userId,
+            });
+            return;
+          }
+          const safetyTimer = setTimeout(() => releaseRadioLock(rideId, userId), RADIO_MAX_HOLD_MS);
+          radioBusyByRide.set(rideId, { userId, name: userName, startedAt: Date.now(), safetyTimer });
+          socket.to(`ride:${rideId}`).emit("radio:transmission_started", { userId, name: userName });
+          ack?.({ success: true });
+        } catch (err) {
+          console.error("[SOCKET] radio:start error:", err);
+          ack?.({ success: false, error: "Internal error" });
+        }
+      },
+    );
+
+    socket.on(
+      "radio:audio",
+      (
+        payload: { rideId: string; audio: string; durationMs?: number },
+        ack?: (...args: any[]) => void,
+      ) => {
+        try {
+          const { rideId, audio, durationMs } = payload || ({} as any);
+          const lock = radioBusyByRide.get(rideId);
+          if (!lock || lock.userId !== userId) {
+            ack?.({ success: false, error: "You don't hold the channel" });
+            return;
+          }
+          if (typeof audio !== "string" || !audio.length) {
+            ack?.({ success: false, error: "audio is required" });
+            releaseRadioLock(rideId, userId);
+            return;
+          }
+          if (audio.length > MAX_RADIO_CLIP_BASE64_CHARS) {
+            ack?.({ success: false, error: "Clip too long" });
+            releaseRadioLock(rideId, userId);
+            return;
+          }
+          socket.to(`ride:${rideId}`).emit("radio:transmission", {
+            userId,
+            name: userName,
+            audio,
+            durationMs: durationMs ?? null,
+            timestamp: new Date().toISOString(),
+          });
+          ack?.({ success: true });
+          releaseRadioLock(rideId, userId);
+        } catch (err) {
+          console.error("[SOCKET] radio:audio error:", err);
+          ack?.({ success: false, error: "Internal error" });
+        }
+      },
+    );
+
+    socket.on("radio:cancel", (payload: { rideId: string }, ack?: (...args: any[]) => void) => {
+      if (payload?.rideId) releaseRadioLock(payload.rideId, userId);
+      ack?.({ success: true });
+    });
+
     // ── request_friend_locations ───────────────────────────────────────
     // Get all friend locations once (for initial map load)
 
@@ -1515,6 +1830,7 @@ export function createSocketServer(httpServer: HttpServer): Server {
       if (rides) {
         for (const rideId of rides) {
           await removeCachedRider(rideId, userId);
+          releaseRadioLock(rideId, userId);
           socket.to(`ride:${rideId}`).emit("rider_left_tracking", {
             userId,
             timestamp: new Date().toISOString(),

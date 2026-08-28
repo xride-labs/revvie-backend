@@ -783,6 +783,16 @@ model RideSummary {
   badges           String[] // badge slugs awarded for this ride
   routeSnapshotUrl String?  @map("route_snapshot_url") // optional Cloudinary preview
 
+  // ── Group Ride Report ─────────────────────────────────────────────────
+  // Tallied server-side over the ride's lifetime by the group cohesion /
+  // rider-health detection in socket.ts (see rideEventCounters there) and
+  // snapshotted here at end-of-ride, same as every other field on this
+  // model. Zero for solo rides (cohesion checks require another rider
+  // present) and zero for group rides where nothing notable happened.
+  sosCount            Int @default(0) @map("sos_count") // times any participant triggered SOS
+  fallingBehindEvents Int @default(0) @map("falling_behind_events") // times a rider drifted from the group and stayed gone long enough to alert
+  unresponsiveEvents  Int @default(0) @map("unresponsive_events") // times a connected rider stopped sending location updates long enough to alert
+
   generatedAt DateTime @default(now()) @map("generated_at")
 
   @@map("ride_summaries")
