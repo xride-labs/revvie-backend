@@ -4,6 +4,8 @@ import { ApiResponse } from "../../lib/utils/apiResponse.js";
 import { validateQuery, asyncHandler } from "../../middlewares/validation.js";
 import { discoveryFeedQuerySchema } from "../../validators/schemas.js";
 import { getDiscoveryFeed } from "../../services/feed.service.js";
+import { getMotorcycleNews } from "../../services/news.service.js";
+import { z } from "zod";
 
 const router = Router();
 
@@ -140,6 +142,53 @@ router.get(
     });
 
     ApiResponse.success(res, feed, "Discovery feed retrieved successfully");
+  }),
+);
+
+const newsQuerySchema = z.object({
+  lat: z.coerce.number().min(-90).max(90).optional(),
+  lng: z.coerce.number().min(-180).max(180).optional(),
+  country: z.string().max(3).optional(),
+  limit: z.coerce.number().int().min(1).max(30).optional().default(12),
+});
+
+/**
+ * @swagger
+ * /api/discover/news:
+ *   get:
+ *     summary: Get live daily motorcycle news and stories
+ *     tags: [Discovery]
+ *     parameters:
+ *       - in: query
+ *         name: lat
+ *         schema:
+ *           type: number
+ *       - in: query
+ *         name: lng
+ *         schema:
+ *           type: number
+ *       - in: query
+ *         name: country
+ *         schema:
+ *           type: string
+ *       - in: query
+ *         name: limit
+ *         schema:
+ *           type: integer
+ *           default: 12
+ */
+router.get(
+  "/news",
+  validateQuery(newsQuerySchema),
+  asyncHandler(async (req: Request, res: Response) => {
+    const { lat, lng, country, limit } = req.query as any;
+    const result = await getMotorcycleNews({
+      lat: lat != null ? Number(lat) : undefined,
+      lng: lng != null ? Number(lng) : undefined,
+      country: country ? String(country) : undefined,
+      limit: limit ? Number(limit) : 12,
+    });
+    ApiResponse.success(res, result, "Motorcycle news retrieved successfully");
   }),
 );
 
