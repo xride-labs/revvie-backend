@@ -1,4 +1,5 @@
 import { Server as HttpServer } from "http";
+import { randomUUID } from "node:crypto";
 import { Server, Socket } from "socket.io";
 import { createAdapter } from "@socket.io/redis-adapter";
 import { Redis } from "ioredis";
@@ -176,6 +177,28 @@ async function removeCachedRider(rideId: string, userId: string) {
 
 // Track which rides each socket is in so we can clean up on disconnect
 const socketRides = new Map<string, Set<string>>(); // socketId → Set<rideId>
+
+// ── P2P call state (custom WebRTC signaling — see the call: handlers below) ──
+// Tracks both "ringing" (invite sent, not yet answered) and "active"
+// (accepted) calls, keyed by each participant's userId so either side's
+// disconnect can find and notify the other. A user can only be in one call
+// entry at a time — a second invite while already ringing/active is
+// rejected rather than silently overwritten.
+interface ActiveCall {
+  callId: string;
+  peerId: string;
+  rideId: string;
+  status: "ringing" | "active";
+}
+const activeCallsByUser = new Map<string, ActiveCall>(); // userId → ActiveCall
+
+function endCallForBothSides(userId: string): ActiveCall | undefined {
+  const call = activeCallsByUser.get(userId);
+  if (!call) return undefined;
+  activeCallsByUser.delete(userId);
+  activeCallsByUser.delete(call.peerId);
+  return call;
+}
 
 // ── Completed-ride tombstones ──────────────────────────────────────────────
 // When a ride ends we add it here for ~30min. Late `update_location` packets
@@ -1256,6 +1279,118 @@ export function createSocketServer(httpServer: HttpServer): Server {
     socket.on("trigger_emergency", handleEmergencyAlert);
     socket.on("emergency-alert", handleEmergencyAlert);
 
+    // ── P2P voice calls (custom WebRTC signaling) ───────────────────────
+    // Scope: 1:1 rider↔lead only (group mesh calling is explicitly out of
+    // scope). This channel only relays signaling messages (invite/answer/
+    // SDP/ICE) between two sockets already both in the ride's room — the
+    // actual audio is peer-to-peer once connected (a TURN relay is required
+    // in front of this for callers behind carrier-grade NAT, which is the
+    // common case on cellular data; that's infra config, not something this
+    // signaling layer needs to know about).
+
+    socket.on(
+      "call:invite",
+      async (
+        payload: { toUserId: string; rideId: string },
+        ack?: (...args: any[]) => void,
+      ) => {
+        try {
+          const { toUserId, rideId } = payload || ({} as any);
+          if (!toUserId || !rideId) {
+            ack?.({ success: false, error: "toUserId and rideId are required" });
+            return;
+          }
+          if (toUserId === userId) {
+            ack?.({ success: false, error: "Cannot call yourself" });
+            return;
+          }
+          if (activeCallsByUser.has(userId)) {
+            ack?.({ success: false, error: "Already in a call", code: "CALLER_BUSY" });
+            return;
+          }
+          if (activeCallsByUser.has(toUserId)) {
+            ack?.({ success: false, error: "That rider is already in a call", code: "CALLEE_BUSY" });
+            return;
+          }
+          if (!isUserOnline(toUserId)) {
+            ack?.({ success: false, error: "Rider is offline", code: "CALLEE_OFFLINE" });
+            return;
+          }
+
+          const callId = randomUUID();
+          activeCallsByUser.set(userId, { callId, peerId: toUserId, rideId, status: "ringing" });
+          activeCallsByUser.set(toUserId, { callId, peerId: userId, rideId, status: "ringing" });
+
+          socket.to(`user:${toUserId}`).emit("call:incoming", {
+            callId,
+            rideId,
+            fromUserId: userId,
+            fromName: userName,
+          });
+
+          ack?.({ success: true, callId });
+        } catch (err) {
+          console.error("[SOCKET] call:invite error:", err);
+          ack?.({ success: false, error: "Internal error" });
+        }
+      },
+    );
+
+    // Callee accepts or declines a ringing invite.
+    socket.on(
+      "call:respond",
+      (payload: { callId: string; accepted: boolean }, ack?: (...args: any[]) => void) => {
+        const call = activeCallsByUser.get(userId);
+        if (!call || call.callId !== payload?.callId) {
+          ack?.({ success: false, error: "No matching ringing call" });
+          return;
+        }
+
+        if (payload.accepted) {
+          activeCallsByUser.set(userId, { ...call, status: "active" });
+          activeCallsByUser.set(call.peerId, { ...call, peerId: userId, status: "active" });
+        } else {
+          activeCallsByUser.delete(userId);
+          activeCallsByUser.delete(call.peerId);
+        }
+
+        socket.to(`user:${call.peerId}`).emit("call:responded", {
+          callId: call.callId,
+          accepted: payload.accepted,
+        });
+        ack?.({ success: true });
+      },
+    );
+
+    // Generic SDP offer/answer/ICE-candidate relay — only forwarded between
+    // two sockets that actually have a ringing/active call together, so this
+    // can't be used to spam arbitrary users with unsolicited signaling.
+    socket.on(
+      "call:signal",
+      (payload: { callId: string; data: unknown }, ack?: (...args: any[]) => void) => {
+        const call = activeCallsByUser.get(userId);
+        if (!call || call.callId !== payload?.callId) {
+          ack?.({ success: false, error: "No matching call" });
+          return;
+        }
+        socket.to(`user:${call.peerId}`).emit("call:signal", {
+          callId: call.callId,
+          fromUserId: userId,
+          data: payload.data,
+        });
+        ack?.({ success: true });
+      },
+    );
+
+    socket.on("call:end", (payload: { callId: string }, ack?: (...args: any[]) => void) => {
+      const call = activeCallsByUser.get(userId);
+      if (call && call.callId === payload?.callId) {
+        endCallForBothSides(userId);
+        socket.to(`user:${call.peerId}`).emit("call:ended", { callId: call.callId, reason: "ended" });
+      }
+      ack?.({ success: true });
+    });
+
     // ── request_friend_locations ───────────────────────────────────────
     // Get all friend locations once (for initial map load)
 
@@ -1317,6 +1452,16 @@ export function createSocketServer(httpServer: HttpServer): Server {
           if (set.delete(userId) && set.size === 0) {
             activeChatPresence.delete(convId);
           }
+        }
+
+        // Gated on "no live sockets left" (not every disconnect) so a
+        // reconnect blip on one device doesn't drop an active call.
+        const endedCall = endCallForBothSides(userId);
+        if (endedCall) {
+          socket.to(`user:${endedCall.peerId}`).emit("call:ended", {
+            callId: endedCall.callId,
+            reason: "peer_disconnected",
+          });
         }
       }
 
