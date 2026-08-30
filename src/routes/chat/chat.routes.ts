@@ -36,6 +36,9 @@ import {
   removeReaction,
   markAsRead,
   getUnreadCounts,
+  pinMessage,
+  votePoll,
+  suspendParticipant,
 } from "../../controllers/chat.controller.js";
 
 const router = Router();
@@ -606,6 +609,29 @@ router.post(
   validateParams(conversationIdParamSchema),
   requireConversationAccess,
   asyncHandler(markAsRead),
+);
+
+// ─── Discord Features ─────────────────────────────────────────────────────────
+
+router.post(
+  "/conversations/:id/messages/:messageId/pin",
+  validateParams(messageIdParamSchema),
+  requireConversationAdmin,
+  asyncHandler(pinMessage),
+);
+
+router.post(
+  "/conversations/:id/messages/:messageId/vote",
+  validateParams(messageIdParamSchema),
+  requireConversationAccess,
+  asyncHandler(votePoll),
+);
+
+router.post(
+  "/conversations/:id/suspend",
+  validateParams(conversationIdParamSchema),
+  requireConversationAdmin,
+  asyncHandler(suspendParticipant),
 );
 
 export default router;

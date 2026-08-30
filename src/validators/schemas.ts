@@ -587,9 +587,15 @@ export const updatePreferencesSchema = z
     emailNotifications: z.boolean().optional(),
     smsNotifications: z.boolean().optional(),
     profileVisibility: z.enum(["public", "friends", "private"]).optional(),
+    allowDMsFrom: z.enum(["everyone", "friends", "none"]).optional(),
+    allowFriendRequestsFrom: z.enum(["everyone", "none"]).optional(),
     showLocation: z.boolean().optional(),
     showBikes: z.boolean().optional(),
     showStats: z.boolean().optional(),
+    notifyRides: z.boolean().optional(),
+    notifyClubs: z.boolean().optional(),
+    notifyMarketplace: z.boolean().optional(),
+    notifySocial: z.boolean().optional(),
     // Mobile-only persistence flags. Without these the PATCH errors with
     // "Validation failed for body" the moment the user toggles the switch.
     lowDataMode: z.boolean().optional(),

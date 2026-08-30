@@ -30,4 +30,19 @@ router.get('/manufacturers/:id/models', async (req, res) => {
   }
 });
 
+// GET /api/catalog/bikes
+router.get('/bikes', async (req, res) => {
+  try {
+    const bikes = await prisma.bikeModel.findMany({
+      include: { manufacturer: true },
+      orderBy: { name: 'asc' },
+      take: 100,
+    });
+    res.json(bikes);
+  } catch (error) {
+    console.error('Error fetching catalog bikes:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
 export const catalogRoutes = router;

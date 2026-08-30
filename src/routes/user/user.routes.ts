@@ -9,6 +9,7 @@ import {
   asyncHandler,
 } from "../../middlewares/validation.js";
 import { requireAdmin } from "../../middlewares/rbac.js";
+import publicUserRoutes from "./public.routes.js";
 import {
   userQuerySchema,
   idParamSchema,
@@ -141,6 +142,13 @@ function getPhoneVariants(value?: string | null): string[] {
 
 // All user routes require authentication
 router.use(requireAuth);
+
+// GET /:id/public — another rider's profile. The handler lives in
+// public.routes.ts but was never mounted on any router, so the endpoint 404'd
+// and the app's profile screen could not load anyone else. Mounted after
+// requireAuth so the handler still sees a session (it needs the viewer id for
+// isOwnProfile and friendshipStatus).
+router.use(publicUserRoutes);
 
 /**
  * Leaderboard — top XP users globally or filtered by city.
@@ -1145,6 +1153,24 @@ router.get(
 // ========================================
 // Bike Management (Current User)
 // ========================================
+
+router.get(
+  "/me/bikes",
+  requireAuth,
+  asyncHandler(async (req: Request, res: Response) => {
+    const session = (req as any).session;
+    const bikes = await prisma.bike.findMany({
+      where: { userId: session.user.id },
+      include: {
+        bikeModel: {
+          include: { manufacturer: true },
+        },
+      },
+      orderBy: [{ isPrimary: "desc" }, { createdAt: "desc" }],
+    });
+    ApiResponse.success(res, bikes, "Bikes retrieved");
+  }),
+);
 
 router.post(
   "/me/bikes",

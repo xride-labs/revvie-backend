@@ -164,11 +164,12 @@ router.get(
             { senderId: id, receiverId: currentUserId },
           ],
         },
-        select: { status: true, senderId: true },
+        select: { id: true, status: true, senderId: true },
       });
-      
+
       if (friendship) {
         friendshipStatus = {
+          id: friendship.id,
           status: friendship.status,
           isInitiator: friendship.senderId === currentUserId,
         };

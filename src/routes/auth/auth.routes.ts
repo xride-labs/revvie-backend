@@ -392,9 +392,15 @@ router.get(
           emailNotifications: true,
           smsNotifications: false,
           profileVisibility: "public",
+          allowDMsFrom: "everyone",
+          allowFriendRequestsFrom: "everyone",
           showLocation: true,
           showBikes: true,
           showStats: true,
+          notifyRides: true,
+          notifyClubs: true,
+          notifyMarketplace: true,
+          notifySocial: true,
         } as const),
     });
   }),
@@ -775,6 +781,54 @@ router.delete(
     }
 
     ApiResponse.success(res, null, "Account deleted");
+  }),
+);
+
+// ========================================
+// Account Bikes (Garage Alias)
+// ========================================
+
+router.get(
+  "/bikes",
+  requireAuth,
+  asyncHandler(async (req: Request, res: Response) => {
+    const session = (req as any).session;
+    const bikes = await prisma.bike.findMany({
+      where: { userId: session.user.id },
+      include: {
+        bikeModel: {
+          include: { manufacturer: true },
+        },
+      },
+      orderBy: [{ isPrimary: "desc" }, { createdAt: "desc" }],
+    });
+    ApiResponse.success(res, bikes, "Bikes retrieved");
+  }),
+);
+
+router.post(
+  "/bikes",
+  requireAuth,
+  asyncHandler(async (req: Request, res: Response) => {
+    const session = (req as any).session;
+    const bikeData = req.body;
+
+    if (bikeData.isPrimary) {
+      await prisma.bike.updateMany({
+        where: { userId: session.user.id },
+        data: { isPrimary: false },
+      });
+    }
+
+    const bike = await prisma.bike.create({
+      data: {
+        ...bikeData,
+        year: bikeData.year ?? new Date().getFullYear(),
+        userId: session.user.id,
+      },
+    });
+
+    ApiResponse.created(res, bike, "Bike added to garage");
   }),
 );
 

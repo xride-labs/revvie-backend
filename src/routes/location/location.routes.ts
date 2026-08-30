@@ -264,6 +264,15 @@ router.get(
   }),
 );
 
+router.get(
+  "/nearby",
+  asyncHandler(async (req: Request, res: Response) => {
+    const userId = (req as any).session?.user?.id;
+    const locations = await LocationService.getFriendLocations(userId);
+    ApiResponse.success(res, { riders: locations, total: locations.length });
+  }),
+);
+
 /**
  * @swagger
  * /api/location/friends/{friendId}:

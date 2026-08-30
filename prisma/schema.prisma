@@ -63,7 +63,7 @@ model User {
 
   // Profile fields
   bio                 String?
-  socialLinks         Json?     @map("social_links") // e.g., { instagram: "...", twitter: "..." }
+  socialLinks         Json?    @map("social_links") // e.g., { instagram: "...", twitter: "..." }
   location            String?
   interests           String[] @default([]) // List of user interests (e.g. touring, sports)
   onboardingCompleted Boolean  @default(false) @map("onboarding_completed")
@@ -908,7 +908,7 @@ model Club {
   joinRequests      ClubJoinRequest[]
   groups            FriendGroup[]
   moderationActions ClubModerationAction[]
-  listings          MarketplaceListing[]  @relation("ClubListings")
+  listings          MarketplaceListing[]   @relation("ClubListings")
 
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
@@ -1239,8 +1239,8 @@ model Bike {
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   // Structured DB relation
-  bikeModelId  String?   @map("bike_model_id")
-  bikeModel    BikeModel? @relation(fields: [bikeModelId], references: [id])
+  bikeModelId String?    @map("bike_model_id")
+  bikeModel   BikeModel? @relation(fields: [bikeModelId], references: [id])
 
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
@@ -1265,17 +1265,17 @@ model Manufacturer {
 }
 
 model BikeModel {
-  id             String       @id @default(cuid())
-  manufacturerId String       @map("manufacturer_id")
+  id             String  @id @default(cuid())
+  manufacturerId String  @map("manufacturer_id")
   name           String
-  imageUrl       String?      @map("image_url")
-  category       String?      // e.g. SPORT, NAKED, ADVENTURE
-  engineCc       Int?         @map("engine_cc")
-  startYear      Int?         @map("start_year")
-  endYear        Int?         @map("end_year")
+  imageUrl       String? @map("image_url")
+  category       String? // e.g. SPORT, NAKED, ADVENTURE
+  engineCc       Int?    @map("engine_cc")
+  startYear      Int?    @map("start_year")
+  endYear        Int?    @map("end_year")
 
-  manufacturer   Manufacturer @relation(fields: [manufacturerId], references: [id], onDelete: Cascade)
-  userBikes      Bike[]
+  manufacturer Manufacturer @relation(fields: [manufacturerId], references: [id], onDelete: Cascade)
+  userBikes    Bike[]
 
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
@@ -1348,18 +1348,24 @@ model UserPreferences {
   pushNotifications  Boolean @default(true) @map("push_notifications")
   emailNotifications Boolean @default(true) @map("email_notifications")
   smsNotifications   Boolean @default(false) @map("sms_notifications")
+  notifyRides        Boolean @default(true) @map("notify_rides")
+  notifyClubs        Boolean @default(true) @map("notify_clubs")
+  notifyMarketplace  Boolean @default(true) @map("notify_marketplace")
+  notifySocial       Boolean @default(true) @map("notify_social")
 
   // Privacy settings
-  profileVisibility String  @default("public") @map("profile_visibility") // "public", "friends", "private"
-  showLocation      Boolean @default(true) @map("show_location")
-  showBikes         Boolean @default(true) @map("show_bikes")
-  lowDataMode       Boolean @default(false) @map("low_data_mode")
-  showStats         Boolean @default(true) @map("show_stats")
+  profileVisibility       String  @default("public") @map("profile_visibility") // "public", "friends", "private"
+  allowDMsFrom            String  @default("everyone") @map("allow_dms_from") // "everyone", "friends", "none"
+  allowFriendRequestsFrom String  @default("everyone") @map("allow_friend_requests_from") // "everyone", "none"
+  showLocation            Boolean @default(true) @map("show_location")
+  showBikes               Boolean @default(true) @map("show_bikes")
+  lowDataMode             Boolean @default(false) @map("low_data_mode")
+  showStats               Boolean @default(true) @map("show_stats")
   // Beta sensor/ghost-mode toggles — persisted so the live ride and ghost
   // location settings survive logout. Default off because the flow assumes
   // explicit opt-in (battery + privacy implications).
-  sensorMode        Boolean @default(false) @map("sensor_mode")
-  ghostMode         Boolean @default(false) @map("ghost_mode")
+  sensorMode              Boolean @default(false) @map("sensor_mode")
+  ghostMode               Boolean @default(false) @map("ghost_mode")
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
@@ -1830,20 +1836,20 @@ enum EventTicketStatus {
 }
 
 model EventTicketTier {
-  id                String   @id @default(cuid())
-  eventId           String   @map("event_id")
-  name              String   // e.g. "General Admission", "VIP Paddock Pass"
-  description       String?  @db.Text
-  price             Float    @default(0) // In INR
-  quantity          Int      @default(100) // Total available tickets
-  availableQuantity Int      @default(100) @map("available_quantity")
-  maxPerUser        Int      @default(5) @map("max_per_user")
+  id                String  @id @default(cuid())
+  eventId           String  @map("event_id")
+  name              String // e.g. "General Admission", "VIP Paddock Pass"
+  description       String? @db.Text
+  price             Float   @default(0) // In INR
+  quantity          Int     @default(100) // Total available tickets
+  availableQuantity Int     @default(100) @map("available_quantity")
+  maxPerUser        Int     @default(5) @map("max_per_user")
 
-  event             Event    @relation(fields: [eventId], references: [id], onDelete: Cascade)
-  tickets           EventTicket[]
+  event   Event         @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  tickets EventTicket[]
 
-  createdAt         DateTime @default(now()) @map("created_at")
-  updatedAt         DateTime @updatedAt @map("updated_at")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
 
   @@index([eventId], map: "idx_ticket_tier_event")
   @@map("event_ticket_tiers")
@@ -1862,12 +1868,12 @@ model EventOrder {
   paymentStatus     EventPaymentStatus @default(COMPLETED) @map("payment_status")
   upiTransactionRef String?            @map("upi_transaction_ref")
 
-  event             Event              @relation(fields: [eventId], references: [id], onDelete: Cascade)
-  user              User               @relation(fields: [userId], references: [id], onDelete: Cascade)
-  tickets           EventTicket[]
+  event   Event         @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  user    User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tickets EventTicket[]
 
-  createdAt         DateTime           @default(now()) @map("created_at")
-  updatedAt         DateTime           @updatedAt @map("updated_at")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
 
   @@index([eventId, userId], map: "idx_event_order_event_user")
   @@map("event_orders")
@@ -1884,13 +1890,13 @@ model EventTicket {
   scannedAt   DateTime?         @map("scanned_at")
   scannedById String?           @map("scanned_by_id")
 
-  order       EventOrder        @relation(fields: [orderId], references: [id], onDelete: Cascade)
-  event       Event             @relation(fields: [eventId], references: [id], onDelete: Cascade)
-  user        User              @relation(fields: [userId], references: [id], onDelete: Cascade)
-  tier        EventTicketTier?  @relation(fields: [tierId], references: [id], onDelete: SetNull)
+  order EventOrder       @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  event Event            @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  user  User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tier  EventTicketTier? @relation(fields: [tierId], references: [id], onDelete: SetNull)
 
-  createdAt   DateTime          @default(now()) @map("created_at")
-  updatedAt   DateTime          @updatedAt @map("updated_at")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
 
   @@index([eventId, ticketCode], map: "idx_event_ticket_event_code")
   @@index([userId], map: "idx_event_ticket_user")
@@ -1943,7 +1949,7 @@ model Expense {
   rideId String? @map("ride_id")
   clubId String? @map("club_id")
 
-  creator User  @relation("ExpenseCreator", fields: [creatorId], references: [id], onDelete: Cascade)
+  creator User           @relation("ExpenseCreator", fields: [creatorId], references: [id], onDelete: Cascade)
   splits  ExpenseSplit[]
 
   createdAt DateTime @default(now()) @map("created_at")
@@ -2011,10 +2017,10 @@ model SavedRoute {
   endLocation   String?  @map("end_location")
   endLat        Float?   @map("end_lat")
   endLng        Float?   @map("end_lng")
-  waypoints     Json?    // [{latitude, longitude, name?, address?}]
+  waypoints     Json? // [{latitude, longitude, name?, address?}]
   routeData     String?  @map("route_data") @db.Text // Encoded geometry polyline
-  distance      Float?   // Distance in km
-  duration      Int?     // Duration in minutes
+  distance      Float? // Distance in km
+  duration      Int? // Duration in minutes
   isFavorite    Boolean  @default(true) @map("is_favorite")
   createdAt     DateTime @default(now()) @map("created_at")
   updatedAt     DateTime @updatedAt @map("updated_at")
@@ -2026,4 +2032,3 @@ model SavedRoute {
   @@index([userId], map: "saved_routes_user_idx")
   @@map("saved_routes")
 }
-

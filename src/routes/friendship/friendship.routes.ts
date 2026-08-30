@@ -237,6 +237,21 @@ router.post(
         ErrorCode.VALIDATION_ERROR,
       );
 
+    // Check if receiver allows friend requests
+    const receiverPrefs = await prisma.userPreferences.findUnique({
+      where: { userId: receiverId },
+      select: { allowFriendRequestsFrom: true },
+    });
+
+    if (receiverPrefs?.allowFriendRequestsFrom === "none") {
+      return ApiResponse.error(
+        res,
+        "This user does not accept friend requests",
+        400,
+        ErrorCode.INVALID_INPUT,
+      );
+    }
+
     // Check if friendship already exists in either direction
     const existing = await prisma.friendship.findFirst({
       where: {

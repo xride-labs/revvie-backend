@@ -19,3 +19,4 @@ export { default as bulkRoutes } from "./bulk.routes.js";
 export { catalogRoutes } from "./catalog/index.js";
 export { default as expenseRoutes } from "./expense/expense.routes.js";
 export { default as savedRoutes } from "./saved/saved.routes.js";
+export { default as weatherRoutes } from "./weather/weather.routes.js";

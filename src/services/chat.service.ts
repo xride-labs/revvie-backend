@@ -112,6 +112,7 @@ export interface CreateConversationInput {
     avatar?: string;
     description?: string;
   };
+  parentConversationId?: string;
   createdBy: string;
 }
 
@@ -124,6 +125,13 @@ export interface SendMessageInput {
   attachments?: IAttachment[];
   location?: ILocation | null;
   replyTo?: string;
+  mentions?: string[];
+  poll?: {
+    question: string;
+    options: { id: string; text: string; votes: string[] }[];
+    multipleAnswers: boolean;
+    endsAt?: Date;
+  };
 }
 
 export interface CursorPaginationOptions {
@@ -196,6 +204,7 @@ export class ChatService {
       type: input.type,
       participants,
       relatedEntityId: input.relatedEntityId ?? null,
+      parentConversationId: input.parentConversationId ?? null,
       metadata: input.metadata ?? {},
       createdBy: input.createdBy,
     });
@@ -311,6 +320,21 @@ export class ChatService {
     return result;
   }
 
+  // ── Suspend participant ──────────────────────────────────────────────────
+  static async suspendParticipant(
+    conversationId: string,
+    userId: string,
+    suspendedUntil: Date,
+  ): Promise<void> {
+    await Conversation.updateOne(
+      {
+        _id: new Types.ObjectId(conversationId),
+        "participants.userId": userId,
+      },
+      { $set: { "participants.$.suspendedUntil": suspendedUntil } }
+    );
+  }
+
   // ── Check if user is participant ────────────────────────────────────────
 
   static async isParticipant(
@@ -406,6 +430,8 @@ export class ChatService {
       attachments: input.attachments ?? [],
       location: input.location ?? null,
       replyTo: input.replyTo ? new Types.ObjectId(input.replyTo) : null,
+      mentions: input.mentions ?? [],
+      poll: input.poll ?? null,
       readBy: [{ userId: input.senderId, readAt: new Date() }],
       deliveredTo: [{ userId: input.senderId, deliveredAt: new Date() }],
       expiresAt,
@@ -483,6 +509,7 @@ export class ChatService {
     const messages = await Message.find(filter)
       .sort({ _id: sortDir })
       .limit(clampedLimit + 1)
+      .populate("replyTo", "senderId text messageType")
       .lean();
 
     const hasMore = messages.length > clampedLimit;
@@ -495,7 +522,45 @@ export class ChatService {
       ? (results[results.length - 1]._id as Types.ObjectId).toString()
       : null;
 
-    return { messages: results as unknown as IMessage[], nextCursor };
+    return { messages: messages as unknown as IMessage[], nextCursor };
+  }
+
+  // ── Pin message ─────────────────────────────────────────────────────────
+
+  static async setPinMessage(messageId: string, isPinned: boolean): Promise<IMessage | null> {
+    return Message.findByIdAndUpdate(
+      messageId,
+      { $set: { isPinned } },
+      { new: true }
+    );
+  }
+
+  // ── Vote Poll ───────────────────────────────────────────────────────────
+
+  static async votePoll(messageId: string, optionId: string, userId: string): Promise<IMessage | null> {
+    const message = await Message.findById(messageId);
+    if (!message || !message.poll) return null;
+
+    if (!message.poll.multipleAnswers) {
+      // Remove user's vote from all options
+      message.poll.options.forEach((opt: any) => {
+        opt.votes = opt.votes.filter((v: string) => v !== userId);
+      });
+    }
+
+    const option = message.poll.options.find((o: any) => o.id === optionId);
+    if (option) {
+      if (!option.votes.includes(userId)) {
+        option.votes.push(userId);
+      } else {
+        option.votes = option.votes.filter((v: string) => v !== userId); // toggle vote
+      }
+    }
+
+    // Must mark modified to save nested array
+    message.markModified('poll');
+    await message.save();
+    return message;
   }
 
   // ── Edit a message ──────────────────────────────────────────────────────

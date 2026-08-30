@@ -8,6 +8,8 @@ export enum ConversationType {
   CLUB = "club",
   MARKETPLACE = "marketplace",
   GROUP = "group",
+  CHANNEL_TEXT = "channel_text",
+  CHANNEL_VOICE = "channel_voice",
 }
 
 /**
@@ -47,6 +49,7 @@ export enum AttachmentType {
   VIDEO = "video",
   AUDIO = "audio",
   FILE = "file",
+  SYSTEM = "system",
 }
 
 export enum ParticipantRole {
@@ -63,6 +66,7 @@ export interface IParticipant {
   joinedAt: Date;
   nickname?: string;
   isMuted: boolean;
+  suspendedUntil?: Date;
 }
 
 export interface ILastMessage {
@@ -84,6 +88,7 @@ export interface IConversation extends Document {
   type: ConversationType;
   participants: IParticipant[];
   relatedEntityId?: string;
+  parentConversationId?: Types.ObjectId;
   metadata: IConversationMetadata;
   lastMessage?: ILastMessage;
   isActive: boolean;
@@ -130,6 +135,19 @@ export interface IDeliveryReceipt {
   deliveredAt: Date;
 }
 
+export interface IPollOption {
+  id: string;
+  text: string;
+  votes: string[]; // array of userIds
+}
+
+export interface IPoll {
+  question: string;
+  options: IPollOption[];
+  multipleAnswers: boolean;
+  endsAt?: Date;
+}
+
 export interface IMessage extends Document {
   _id: Types.ObjectId;
   conversationId: Types.ObjectId;
@@ -142,6 +160,9 @@ export interface IMessage extends Document {
   reactions: IReaction[];
   readBy: IReadReceipt[];
   deliveredTo: IDeliveryReceipt[];
+  mentions: string[];
+  isPinned: boolean;
+  poll?: IPoll;
   editedAt?: Date;
   deletedAt?: Date;
   // Phase 5 retention — when set, Mongo's TTL index drops the document at
@@ -175,6 +196,7 @@ const ParticipantSchema = new Schema<IParticipant>(
     joinedAt: { type: Date, default: Date.now },
     nickname: { type: String },
     isMuted: { type: Boolean, default: false },
+    suspendedUntil: { type: Date, default: null },
   },
   { _id: false },
 );
@@ -219,6 +241,7 @@ const ConversationSchema = new Schema<IConversation>(
       },
     },
     relatedEntityId: { type: String, default: null },
+    parentConversationId: { type: Schema.Types.ObjectId, ref: "Conversation", default: null },
     metadata: { type: ConversationMetadataSchema, default: {} },
     lastMessage: { type: LastMessageSchema, default: null },
     isActive: { type: Boolean, default: true },
@@ -316,6 +339,25 @@ const DeliveryReceiptSchema = new Schema<IDeliveryReceipt>(
   { _id: false },
 );
 
+const PollOptionSchema = new Schema<IPollOption>(
+  {
+    id: { type: String, required: true },
+    text: { type: String, required: true },
+    votes: { type: [String], default: [] }, // array of userIds
+  },
+  { _id: false }
+);
+
+const PollSchema = new Schema<IPoll>(
+  {
+    question: { type: String, required: true },
+    options: { type: [PollOptionSchema], required: true },
+    multipleAnswers: { type: Boolean, default: false },
+    endsAt: { type: Date, default: null },
+  },
+  { _id: false }
+);
+
 const MessageSchema = new Schema<IMessage>(
   {
     conversationId: {
@@ -336,6 +378,9 @@ const MessageSchema = new Schema<IMessage>(
     reactions: { type: [ReactionSchema], default: [] },
     readBy: { type: [ReadReceiptSchema], default: [] },
     deliveredTo: { type: [DeliveryReceiptSchema], default: [] },
+    mentions: { type: [String], default: [] },
+    isPinned: { type: Boolean, default: false },
+    poll: { type: PollSchema, default: null },
     editedAt: { type: Date, default: null },
     deletedAt: { type: Date, default: null },
     expiresAt: { type: Date, default: null },

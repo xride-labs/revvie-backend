@@ -511,18 +511,30 @@ function evaluateRegroupArrival(
 // authenticated user who obtains a rideId (shared link, screenshot, guessed
 // id) could join a stranger's ride room and read their live location, or
 // spam a fabricated SOS to real participants.
-async function isRideParticipant(rideId: string, userId: string): Promise<boolean> {
-  const ride = await prisma.ride.findUnique({
-    where: { id: rideId },
-    select: { creatorId: true },
-  });
-  if (!ride) return false;
-  if (ride.creatorId === userId) return true;
-  const participant = await prisma.rideParticipant.findFirst({
-    where: { rideId, userId, status: { in: ["ACCEPTED", "COMPLETED"] } },
-    select: { id: true },
-  });
-  return Boolean(participant);
+async function isRideParticipant(
+  rideId?: string | null,
+  userId?: string | null,
+): Promise<boolean> {
+  if (!rideId || typeof rideId !== "string" || !rideId.trim() || !userId || typeof userId !== "string") {
+    return false;
+  }
+  try {
+    const cleanRideId = rideId.trim();
+    const ride = await prisma.ride.findUnique({
+      where: { id: cleanRideId },
+      select: { creatorId: true },
+    });
+    if (!ride) return false;
+    if (ride.creatorId === userId) return true;
+    const participant = await prisma.rideParticipant.findFirst({
+      where: { rideId: cleanRideId, userId, status: { in: ["ACCEPTED", "COMPLETED"] } },
+      select: { id: true },
+    });
+    return Boolean(participant);
+  } catch (err) {
+    console.error("[SOCKET] isRideParticipant check error:", err);
+    return false;
+  }
 }
 
 // ─── Module-scope io reference ───────────────────────────────────────────────
@@ -1427,17 +1439,25 @@ export function createSocketServer(httpServer: HttpServer): Server {
       ack?: (...args: any[]) => void,
     ) => {
       try {
-        if (!(await isRideParticipant(payload.rideId, userId))) {
+        if (!payload?.rideId || typeof payload.rideId !== "string" || !payload.rideId.trim()) {
+          socket.emit("error", { event: "join_ride_tracking", message: "Valid rideId is required" });
+          ack?.({ success: false, error: "Valid rideId is required" });
+          return;
+        }
+
+        const rideId = payload.rideId.trim();
+
+        if (!(await isRideParticipant(rideId, userId))) {
           socket.emit("error", { event: "join_ride_tracking", message: "Access denied" });
           ack?.({ success: false, error: "Access denied" });
           return;
         }
 
-        socket.join(`ride:${payload.rideId}`);
+        socket.join(`ride:${rideId}`);
 
         // Track which rides this socket is in for disconnect cleanup
         if (!socketRides.has(socket.id)) socketRides.set(socket.id, new Set());
-        socketRides.get(socket.id)!.add(payload.rideId);
+        socketRides.get(socket.id)!.add(rideId);
 
         const joinedPayload = {
           userId,
@@ -1445,19 +1465,19 @@ export function createSocketServer(httpServer: HttpServer): Server {
           timestamp: new Date().toISOString(),
         };
         socket
-          .to(`ride:${payload.rideId}`)
+          .to(`ride:${rideId}`)
           .emit("participant-joined", joinedPayload);
         socket
-          .to(`ride:${payload.rideId}`)
+          .to(`ride:${rideId}`)
           .emit("rider_joined_tracking", joinedPayload);
 
         // Return all cached rider positions so the joining client can
         // immediately render everyone on the map without waiting for the
         // next 3-second broadcast cycle.
-        const riders = await getCachedRiders(payload.rideId);
+        const riders = await getCachedRiders(rideId);
 
         console.log(
-          `[SOCKET] ${userId} joined ride tracking for ${payload.rideId} (${riders.length} riders cached)`,
+          `[SOCKET] ${userId} joined ride tracking for ${rideId} (${riders.length} riders cached)`,
         );
         ack?.({ success: true, riders });
       } catch (err) {
@@ -1475,17 +1495,22 @@ export function createSocketServer(httpServer: HttpServer): Server {
       payload: JoinRidePayload,
       ack?: (...args: any[]) => void,
     ) => {
-      socket.leave(`ride:${payload.rideId}`);
-      await removeCachedRider(payload.rideId, userId);
-      socketRides.get(socket.id)?.delete(payload.rideId);
+      if (!payload?.rideId || typeof payload.rideId !== "string" || !payload.rideId.trim()) {
+        ack?.({ success: false, error: "Valid rideId is required" });
+        return;
+      }
+      const rideId = payload.rideId.trim();
+      socket.leave(`ride:${rideId}`);
+      await removeCachedRider(rideId, userId);
+      socketRides.get(socket.id)?.delete(rideId);
 
       const leftPayload = {
         userId,
         timestamp: new Date().toISOString(),
       };
-      socket.to(`ride:${payload.rideId}`).emit("participant-left", leftPayload);
+      socket.to(`ride:${rideId}`).emit("participant-left", leftPayload);
       socket
-        .to(`ride:${payload.rideId}`)
+        .to(`ride:${rideId}`)
         .emit("rider_left_tracking", leftPayload);
 
       ack?.({ success: true });
@@ -1511,6 +1536,12 @@ export function createSocketServer(httpServer: HttpServer): Server {
       },
       ack?: (...args: any[]) => void,
     ) => {
+      if (!payload?.rideId || typeof payload.rideId !== "string" || !payload.rideId.trim()) {
+        ack?.({ success: false, error: "Valid rideId is required" });
+        return;
+      }
+      const rideId = payload.rideId.trim();
+
       const latitude = payload.latitude ?? payload.lat;
       const longitude = payload.longitude ?? payload.lon;
 
@@ -1519,7 +1550,7 @@ export function createSocketServer(httpServer: HttpServer): Server {
         return;
       }
 
-      if (!(await isRideParticipant(payload.rideId, userId))) {
+      if (!(await isRideParticipant(rideId, userId))) {
         ack?.({ success: false, error: "Access denied" });
         return;
       }

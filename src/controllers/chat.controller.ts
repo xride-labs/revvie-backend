@@ -7,6 +7,7 @@ import {
 import { ConversationType, MessageType } from "../models/chat.model.js";
 import { ApiResponse, ErrorCode } from "../lib/utils/apiResponse.js";
 import { fanoutNewMessage } from "../lib/socket.js";
+import prisma from "../lib/prisma.js";
 
 // ─── Conversations ───────────────────────────────────────────────────────────
 
@@ -79,6 +80,40 @@ export async function createConversation(
 
     // Ensure the creator is included in participants
     const allParticipants = Array.from(new Set([userId, ...participantIds]));
+
+    // Check privacy settings for DIRECT messages
+    if (type === "DIRECT" && participantIds.length > 0) {
+      const receiverId = participantIds.find((id: string) => id !== userId);
+      if (receiverId) {
+        const receiverPrefs = await prisma.userPreferences.findUnique({
+          where: { userId: receiverId },
+          select: { allowDMsFrom: true },
+        });
+
+        const allowDMsFrom = receiverPrefs?.allowDMsFrom || "everyone";
+
+        if (allowDMsFrom === "none") {
+          ApiResponse.error(res, "This user does not accept direct messages", 400, ErrorCode.INVALID_INPUT);
+          return;
+        }
+
+        if (allowDMsFrom === "friends") {
+          const isFriend = await prisma.friendship.findFirst({
+            where: {
+              OR: [
+                { senderId: userId, receiverId, status: "ACCEPTED" },
+                { senderId: receiverId, receiverId: userId, status: "ACCEPTED" },
+              ],
+            },
+          });
+          
+          if (!isFriend) {
+            ApiResponse.error(res, "This user only accepts direct messages from friends", 400, ErrorCode.INVALID_INPUT);
+            return;
+          }
+        }
+      }
+    }
 
     const conversation = await ChatService.createConversation({
       type,
@@ -445,5 +480,49 @@ export async function getUnreadCounts(
       "Failed to get unread counts",
       error as Error,
     );
+  }
+}
+
+// ─── Extensions ─────────────────────────────────────────────────────
+
+export async function pinMessage(req: Request, res: Response): Promise<void> {
+  try {
+    const { messageId } = req.params;
+    const { isPinned } = req.body;
+    const message = await ChatService.setPinMessage(messageId, isPinned);
+    if (!message) {
+      ApiResponse.notFound(res, "Message not found", ErrorCode.NOT_FOUND);
+      return;
+    }
+    ApiResponse.success(res, message, `Message ${isPinned ? 'pinned' : 'unpinned'}`);
+  } catch (error) {
+    ApiResponse.internalError(res, "Failed to pin message", error as Error);
+  }
+}
+
+export async function votePoll(req: Request, res: Response): Promise<void> {
+  try {
+    const { messageId } = req.params;
+    const { optionId } = req.body;
+    const userId = req.session!.user.id;
+    const message = await ChatService.votePoll(messageId, optionId, userId);
+    if (!message) {
+      ApiResponse.notFound(res, "Poll not found", ErrorCode.NOT_FOUND);
+      return;
+    }
+    ApiResponse.success(res, message, "Vote cast successfully");
+  } catch (error) {
+    ApiResponse.internalError(res, "Failed to vote on poll", error as Error);
+  }
+}
+
+export async function suspendParticipant(req: Request, res: Response): Promise<void> {
+  try {
+    const { id } = req.params;
+    const { userId, suspendedUntil } = req.body;
+    await ChatService.suspendParticipant(id, userId, new Date(suspendedUntil));
+    ApiResponse.success(res, null, "Participant suspended");
+  } catch (error) {
+    ApiResponse.internalError(res, "Failed to suspend participant", error as Error);
   }
 }

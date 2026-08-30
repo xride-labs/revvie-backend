@@ -34,6 +34,7 @@ import {
   catalogRoutes,
   expenseRoutes,
   savedRoutes,
+  weatherRoutes,
 } from "./routes/index.js";
 import {
   initializeScheduledJobs,
@@ -88,6 +89,10 @@ const authLimiter = rateLimit({
   max: isProduction ? 20 : 1000, // 20 attempts / 15min in prod
   standardHeaders: true,
   legacyHeaders: false,
+  skip: (req) =>
+    process.env.RATE_LIMIT_DISABLED === "true" ||
+    (Boolean(process.env.LOADTEST_BYPASS_SECRET) &&
+      req.headers["x-loadtest-bypass"] === process.env.LOADTEST_BYPASS_SECRET),
   handler: (_req, res) => {
     ApiResponse.tooManyRequests(
       res,
@@ -103,6 +108,10 @@ const apiLimiter = rateLimit({
   max: isProduction ? 120 : 10000, // 120 req/min in prod
   standardHeaders: true,
   legacyHeaders: false,
+  skip: (req) =>
+    process.env.RATE_LIMIT_DISABLED === "true" ||
+    (Boolean(process.env.LOADTEST_BYPASS_SECRET) &&
+      req.headers["x-loadtest-bypass"] === process.env.LOADTEST_BYPASS_SECRET),
   handler: (_req, res) => {
     ApiResponse.tooManyRequests(
       res,
@@ -260,6 +269,7 @@ app.use("/api/bulk", bulkRoutes);
 app.use("/api/catalog", catalogRoutes);
 app.use("/api/expenses", expenseRoutes);
 app.use("/api/saved", savedRoutes);
+app.use("/api/weather", weatherRoutes);
 
 // Base URL welcome page
 app.get("/", (req: Request, res: Response) => {
