@@ -15,6 +15,7 @@ model Account {
   userId                String    @map("user_id")
   accountId             String    @map("account_id") // Provider's account ID or equal to userId for credentials
   providerId            String    @map("provider_id") // e.g., "credential", "google", "phone"
+  issuer                String?
   accessToken           String?   @map("access_token") @db.Text
   refreshToken          String?   @map("refresh_token") @db.Text
   accessTokenExpiresAt  DateTime? @map("access_token_expires_at")

@@ -1,6 +1,7 @@
 import { betterAuth } from "better-auth";
 import { prismaAdapter } from "better-auth/adapters/prisma";
 import { bearer, emailOTP, magicLink } from "better-auth/plugins";
+import { passkey } from "@better-auth/passkey";
 import prisma from "../lib/prisma.js";
 import type { Request, Response, NextFunction } from "express";
 import { fromNodeHeaders } from "better-auth/node";
@@ -344,6 +345,7 @@ export const auth = betterAuth({
         if (!sent) throw new Error("Failed to send Magic Link email");
       },
     }),
+    passkey(),
   ],
 });
 

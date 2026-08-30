@@ -88,11 +88,12 @@ const authLimiter = rateLimit({
   max: isProduction ? 20 : 1000, // 20 attempts / 15min in prod
   standardHeaders: true,
   legacyHeaders: false,
-  message: {
-    error: {
-      code: "RATE_LIMITED",
-      message: "Too many auth attempts. Try again in 15 minutes.",
-    },
+  handler: (_req, res) => {
+    ApiResponse.tooManyRequests(
+      res,
+      "Too many auth attempts. Try again in 15 minutes.",
+      ErrorCode.RATE_LIMIT_EXCEEDED,
+    );
   },
 });
 
@@ -102,8 +103,12 @@ const apiLimiter = rateLimit({
   max: isProduction ? 120 : 10000, // 120 req/min in prod
   standardHeaders: true,
   legacyHeaders: false,
-  message: {
-    error: { code: "RATE_LIMITED", message: "Too many requests. Slow down." },
+  handler: (_req, res) => {
+    ApiResponse.tooManyRequests(
+      res,
+      "Too many requests. Slow down.",
+      ErrorCode.RATE_LIMIT_EXCEEDED,
+    );
   },
 });
 
