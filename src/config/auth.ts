@@ -230,7 +230,7 @@ export const auth = betterAuth({
   // Share auth cookies across subdomains in production.
   advanced: {
     crossSubDomainCookies: {
-      enabled: process.env.NODE_ENV === "production" && !!process.env.BETTER_AUTH_COOKIE_DOMAIN,
+      enabled: process.env.NODE_ENV === "production",
       domain: process.env.BETTER_AUTH_COOKIE_DOMAIN || ".xride-labs.in",
     },
   },

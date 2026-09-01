@@ -14,8 +14,8 @@
  * be driven by a recommendation / personalisation engine.
  */
 
-import prisma from "../lib/prisma.js";
-import { haversineDistance, boundingBox } from "../lib/utils/geo.js";
+import prisma from "../../lib/prisma.js";
+import { haversineDistance, boundingBox } from "../../lib/utils/geo.js";
 
 // ──────────────── Types ────────────────
 export interface FeedQuery {

@@ -1,4 +1,4 @@
-import prisma from "../lib/prisma.js";
+import prisma from "../../lib/prisma.js";
 
 /**
  * Best-effort club activity tracker. Called from the chat send path: if the

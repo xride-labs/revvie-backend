@@ -3,9 +3,9 @@ import { requireAuth } from "../../config/auth.js";
 import { ApiResponse } from "../../lib/utils/apiResponse.js";
 import { validateQuery, asyncHandler } from "../../middlewares/validation.js";
 import { discoveryFeedQuerySchema } from "../../validators/schemas.js";
-import { getDiscoveryFeed } from "../../services/feed.service.js";
-import { getMotorcycleNews } from "../../services/news.service.js";
 import { z } from "zod";
+import { getDiscoveryFeed } from "../../services/feed/feed.service.js";
+import { getMotorcycleNews } from "../../services/feed/news.service.js";
 
 const router = Router();
 

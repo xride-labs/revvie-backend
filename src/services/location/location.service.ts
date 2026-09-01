@@ -1,5 +1,5 @@
 import { Prisma } from "@prisma/client";
-import prisma from "../lib/prisma.js";
+import prisma from "../../lib/prisma.js";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -99,60 +99,6 @@ export class LocationService {
         ghostMode: false,
       },
     });
-  }
-
-  /**
-   * Update location sharing settings
-   */
-  static async updateSharingSettings(
-    userId: string,
-    settings: LocationSharingSettings
-  ): Promise<void> {
-    await prisma.userLiveLocation.upsert({
-      where: { userId },
-      update: {
-        sharingEnabled: settings.sharingEnabled,
-        shareWithAll: settings.shareWithAll,
-        ghostMode: settings.ghostMode,
-        expiresAt: settings.expiresAt,
-      },
-      create: {
-        userId,
-        latitude: 0,
-        longitude: 0,
-        sharingEnabled: settings.sharingEnabled ?? true,
-        shareWithAll: settings.shareWithAll ?? false,
-        ghostMode: settings.ghostMode ?? false,
-        expiresAt: settings.expiresAt,
-      },
-    });
-  }
-
-  /**
-   * Get a user's location sharing settings
-   */
-  static async getSharingSettings(userId: string): Promise<{
-    sharingEnabled: boolean;
-    shareWithAll: boolean;
-    ghostMode: boolean;
-    expiresAt: Date | null;
-  }> {
-    const location = await prisma.userLiveLocation.findUnique({
-      where: { userId },
-      select: {
-        sharingEnabled: true,
-        shareWithAll: true,
-        ghostMode: true,
-        expiresAt: true,
-      },
-    });
-
-    return {
-      sharingEnabled: location?.sharingEnabled ?? true,
-      shareWithAll: location?.shareWithAll ?? false,
-      ghostMode: location?.ghostMode ?? false,
-      expiresAt: location?.expiresAt ?? null,
-    };
   }
 
   /**
@@ -301,21 +247,14 @@ export class LocationService {
       },
     });
 
-    if (!location || location.ghostMode || !location.sharingEnabled) {
-      return null;
-    }
-
-    // Check if expired
-    if (location.expiresAt && location.expiresAt < new Date()) {
-      return null;
-    }
-
-    // Check if they allow this user to see
-    if (permission && !permission.canSee) {
-      return null;
-    }
-
-    if (!permission && !location.shareWithAll) {
+    if (
+      !location || 
+      location.ghostMode || 
+      !location.sharingEnabled ||
+      (location.expiresAt && location.expiresAt < new Date()) ||
+      (permission && !permission.canSee) ||
+      (!permission && !location.shareWithAll)
+    ) {
       return null;
     }
 
@@ -337,145 +276,6 @@ export class LocationService {
       lastUpdated: location.updatedAt,
       isOnline,
     };
-  }
-
-  /**
-   * Set location sharing permission for a specific friend
-   */
-  static async setFriendPermission(
-    userId: string,
-    input: LocationPermissionInput
-  ): Promise<void> {
-    // Verify friendship exists
-    const friendship = await prisma.friendship.findFirst({
-      where: {
-        OR: [
-          { senderId: userId, receiverId: input.friendId },
-          { senderId: input.friendId, receiverId: userId },
-        ],
-        status: "ACCEPTED",
-      },
-    });
-
-    if (!friendship) {
-      throw new Error("Not friends with this user");
-    }
-
-    await prisma.locationSharePermission.upsert({
-      where: {
-        userId_friendId: {
-          userId,
-          friendId: input.friendId,
-        },
-      },
-      update: {
-        canSee: input.canSee,
-        canSeeSpeed: input.canSeeSpeed,
-        canSeeBattery: input.canSeeBattery,
-      },
-      create: {
-        userId,
-        friendId: input.friendId,
-        canSee: input.canSee,
-        canSeeSpeed: input.canSeeSpeed ?? true,
-        canSeeBattery: input.canSeeBattery ?? false,
-      },
-    });
-  }
-
-  /**
-   * Get all permission settings for a user
-   */
-  static async getAllPermissions(userId: string): Promise<
-    Array<{
-      friendId: string;
-      friendName: string;
-      friendAvatar?: string;
-      canSee: boolean;
-      canSeeSpeed: boolean;
-      canSeeBattery: boolean;
-    }>
-  > {
-    // Get all accepted friends
-    const friendships = await prisma.friendship.findMany({
-      where: {
-        OR: [{ senderId: userId }, { receiverId: userId }],
-        status: "ACCEPTED",
-      },
-      include: {
-        sender: {
-          select: { id: true, name: true, avatar: true },
-        },
-        receiver: {
-          select: { id: true, name: true, avatar: true },
-        },
-      },
-    });
-
-    // Get existing permissions
-    const permissions = await prisma.locationSharePermission.findMany({
-      where: { userId },
-    });
-
-    const permissionMap = new Map(
-      permissions.map((p) => [p.friendId, p])
-    );
-
-    return friendships.map((f) => {
-      const friend = f.senderId === userId ? f.receiver : f.sender;
-      const permission = permissionMap.get(friend.id);
-
-      return {
-        friendId: friend.id,
-        friendName: friend.name ?? "Unknown",
-        friendAvatar: friend.avatar ?? undefined,
-        canSee: permission?.canSee ?? true, // Default to visible
-        canSeeSpeed: permission?.canSeeSpeed ?? true,
-        canSeeBattery: permission?.canSeeBattery ?? false,
-      };
-    });
-  }
-
-  /**
-   * Enable ghost mode (hide from everyone)
-   */
-  static async enableGhostMode(
-    userId: string,
-    durationMinutes?: number
-  ): Promise<void> {
-    const expiresAt = durationMinutes
-      ? new Date(Date.now() + durationMinutes * 60 * 1000)
-      : null;
-
-    await prisma.userLiveLocation.upsert({
-      where: { userId },
-      update: {
-        ghostMode: true,
-        expiresAt,
-      },
-      create: {
-        userId,
-        latitude: 0,
-        longitude: 0,
-        ghostMode: true,
-        sharingEnabled: false,
-        expiresAt,
-      },
-    });
-  }
-
-  /**
-   * Disable ghost mode
-   */
-  static async disableGhostMode(userId: string): Promise<void> {
-    await prisma.userLiveLocation.update({
-      where: { userId },
-      data: {
-        ghostMode: false,
-        sharingEnabled: true,
-        expiresAt: null,
-      },
-    });
   }
 
   /**

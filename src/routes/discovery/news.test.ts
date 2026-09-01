@@ -20,6 +20,7 @@ describe("Motorcycle News Service", () => {
     expect(first).toHaveProperty("category");
     expect(first).toHaveProperty("publishedAt");
     expect(first).toHaveProperty("readTimeMinutes");
+    expect(first).toHaveProperty("tier");
     expect(first.title.length).toBeGreaterThan(5);
     expect(first.url.startsWith("http")).toBe(true);
     expect(first.imageUrl.startsWith("http")).toBe(true);

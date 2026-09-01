@@ -1,5 +1,5 @@
-import prisma from "../lib/prisma.js";
-import { createNotification } from "../lib/notifications.js";
+import prisma from "../../lib/prisma.js";
+import { createNotification } from "../../lib/notifications.js";
 import {
   muteClubMemberEverywhere,
   setClubChatPostingBlocked,
@@ -7,7 +7,7 @@ import {
   addClubMemberToAnnouncements,
   ensureAnnouncementsGroup,
   postGroupSystemMessage,
-} from "./clubGroupChat.service.js";
+} from "./groupChat.service.js";
 
 export type ModerationAction =
   | "PROMOTE"

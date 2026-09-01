@@ -6,7 +6,8 @@ import { Redis } from "ioredis";
 import { auth } from "../config/auth.js";
 import { fromNodeHeaders } from "better-auth/node";
 import { ChatService } from "../services/chat.service.js";
-import { LocationService } from "../services/location.service.js";
+import { LocationService } from "../services/location/location.service.js";
+import { LocationSettingsService } from "../services/location/settings.service.js";
 import { MessageType } from "../models/chat.model.js";
 import type { IAttachment } from "../models/chat.model.js";
 import { sendPushToUsers, channelForType, categoryForType } from "./push.js";
@@ -1008,7 +1009,7 @@ export function createSocketServer(httpServer: HttpServer): Server {
             attachments,
             location,
             replyTo,
-          });
+          } as import("../services/chat/chat.types.js").SendMessageInput);
 
           // Broadcast to all participants in the conversation room
           io.to(`conversation:${conversationId}`).emit("new_message", {
@@ -1985,12 +1986,12 @@ export function createSocketServer(httpServer: HttpServer): Server {
       ) => {
         try {
           if (payload.enabled) {
-            await LocationService.enableGhostMode(
+            await LocationSettingsService.enableGhostMode(
               userId,
               payload.durationMinutes,
             );
           } else {
-            await LocationService.disableGhostMode(userId);
+            await LocationSettingsService.disableGhostMode(userId);
           }
           ack?.({ success: true });
         } catch (err) {

@@ -1,16 +1,14 @@
-import { Router, Request, Response, NextFunction } from "express";
-import { requireAuth } from "../../config/auth.js";
-import {
-  validateBody,
-  validateParams,
-  asyncHandler,
-} from "../../middlewares/validation.js";
+import { NextFunction, Request, Response, Router } from "express";
 import { z } from "zod";
-import { LocationService } from "../../services/location.service.js";
+import { requireAuth } from "../../config/auth.js";
+import { LocationController } from "../../controllers/location.controller.js";
+import { isUserPro, requirePro } from "../../lib/subscription.js";
 import { ApiResponse, ErrorCode } from "../../lib/utils/apiResponse.js";
-import { requirePro, isUserPro } from "../../lib/subscription.js";
-import { broadcastRiderLocation } from "../../lib/socket.js";
-import prisma from "../../lib/prisma.js";
+import {
+    asyncHandler,
+    validateBody,
+    validateParams,
+} from "../../middlewares/validation.js";
 
 const router = Router();
 
@@ -140,39 +138,7 @@ router.post(
   "/",
   requireSocialLocationPro,
   validateBody(updateLocationSchema),
-  asyncHandler(async (req: Request, res: Response) => {
-    const userId = (req as any).session?.user?.id;
-    const { isOnRide, rideId, ...rest } = req.body;
-
-    await LocationService.updateLocation({
-      userId,
-      isOnRide,
-      rideId,
-      ...rest,
-    });
-
-    if (isOnRide && rideId) {
-      const user = await prisma.user.findUnique({
-        where: { id: userId },
-        select: { name: true, avatar: true },
-      });
-      await broadcastRiderLocation({
-        rideId,
-        userId,
-        name: user?.name || "Rider",
-        avatar: user?.avatar,
-        latitude: req.body.latitude,
-        longitude: req.body.longitude,
-        heading: req.body.heading,
-        speed: req.body.speed,
-        altitude: req.body.altitude,
-        accuracy: req.body.accuracy,
-        isMoving: req.body.isMoving,
-      });
-    }
-
-    ApiResponse.success(res, null, "Location updated");
-  }),
+  asyncHandler(LocationController.postRoot)
 );
 
 /**
@@ -189,11 +155,7 @@ router.post(
  */
 router.get(
   "/settings",
-  asyncHandler(async (req: Request, res: Response) => {
-    const userId = (req as any).session?.user?.id;
-    const settings = await LocationService.getSharingSettings(userId);
-    ApiResponse.success(res, settings);
-  }),
+  asyncHandler(LocationController.getSettings)
 );
 
 /**
@@ -226,21 +188,7 @@ router.patch(
   "/settings",
   requireLiveLocationPro,
   validateBody(updateSettingsSchema),
-  asyncHandler(async (req: Request, res: Response) => {
-    const userId = (req as any).session?.user?.id;
-    const { expiresInMinutes, ...rest } = req.body;
-
-    const expiresAt = expiresInMinutes
-      ? new Date(Date.now() + expiresInMinutes * 60 * 1000)
-      : undefined;
-
-    await LocationService.updateSharingSettings(userId, {
-      ...rest,
-      expiresAt,
-    });
-
-    ApiResponse.success(res, null, "Settings updated");
-  }),
+  asyncHandler(LocationController.patchSettings)
 );
 
 /**
@@ -257,20 +205,12 @@ router.patch(
  */
 router.get(
   "/friends",
-  asyncHandler(async (req: Request, res: Response) => {
-    const userId = (req as any).session?.user?.id;
-    const locations = await LocationService.getFriendLocations(userId);
-    ApiResponse.success(res, { friends: locations });
-  }),
+  asyncHandler(LocationController.getFriends)
 );
 
 router.get(
   "/nearby",
-  asyncHandler(async (req: Request, res: Response) => {
-    const userId = (req as any).session?.user?.id;
-    const locations = await LocationService.getFriendLocations(userId);
-    ApiResponse.success(res, { riders: locations, total: locations.length });
-  }),
+  asyncHandler(LocationController.getNearby)
 );
 
 /**
@@ -296,18 +236,7 @@ router.get(
 router.get(
   "/friends/:friendId",
   validateParams(friendIdParamSchema),
-  asyncHandler(async (req: Request, res: Response) => {
-    const userId = (req as any).session?.user?.id;
-    const { friendId } = req.params;
-
-    const location = await LocationService.getFriendLocation(userId, friendId);
-
-    if (!location) {
-      return ApiResponse.notFound(res, "Location not available");
-    }
-
-    ApiResponse.success(res, location);
-  }),
+  asyncHandler(LocationController.getFriendsByFriendId)
 );
 
 /**
@@ -324,11 +253,7 @@ router.get(
  */
 router.get(
   "/permissions",
-  asyncHandler(async (req: Request, res: Response) => {
-    const userId = (req as any).session?.user?.id;
-    const permissions = await LocationService.getAllPermissions(userId);
-    ApiResponse.success(res, { permissions });
-  }),
+  asyncHandler(LocationController.getPermissions)
 );
 
 /**
@@ -363,16 +288,7 @@ router.post(
   "/permissions",
   requireLiveLocationPro,
   validateBody(setPermissionSchema),
-  asyncHandler(async (req: Request, res: Response) => {
-    const userId = (req as any).session?.user?.id;
-
-    try {
-      await LocationService.setFriendPermission(userId, req.body);
-      ApiResponse.success(res, null, "Permission updated");
-    } catch (err: any) {
-      ApiResponse.error(res, err.message, 400);
-    }
-  }),
+  asyncHandler(LocationController.postPermissions)
 );
 
 /**
@@ -403,18 +319,7 @@ router.post(
   "/ghost-mode",
   requireLiveLocationPro,
   validateBody(ghostModeSchema),
-  asyncHandler(async (req: Request, res: Response) => {
-    const userId = (req as any).session?.user?.id;
-    const { enabled, durationMinutes } = req.body;
-
-    if (enabled) {
-      await LocationService.enableGhostMode(userId, durationMinutes);
-      ApiResponse.success(res, null, "Ghost mode enabled");
-    } else {
-      await LocationService.disableGhostMode(userId);
-      ApiResponse.success(res, null, "Ghost mode disabled");
-    }
-  }),
+  asyncHandler(LocationController.postGhostMode)
 );
 
 /**
@@ -438,20 +343,7 @@ router.post(
 router.get(
   "/ride/:rideId",
   validateParams(rideIdParamSchema),
-  asyncHandler(async (req: Request, res: Response) => {
-    const userId = (req as any).session?.user?.id;
-    const { rideId } = req.params;
-
-    try {
-      const locations = await LocationService.getRideParticipantLocations(
-        rideId,
-        userId,
-      );
-      ApiResponse.success(res, { participants: locations });
-    } catch (err: any) {
-      ApiResponse.error(res, err.message, 400);
-    }
-  }),
+  asyncHandler(LocationController.getRideByRideId)
 );
 
 export default router;

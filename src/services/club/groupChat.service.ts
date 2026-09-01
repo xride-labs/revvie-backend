@@ -1,13 +1,13 @@
 import { Types } from "mongoose";
-import prisma from "../lib/prisma.js";
+import prisma from "../../lib/prisma.js";
 import {
   Conversation,
   UnreadCount,
   ConversationType,
   ParticipantRole,
   IConversation,
-} from "../models/chat.model.js";
-import { ChatService } from "./chat.service.js";
+} from "../../models/chat.model.js";
+import { ChatService } from "../chat.service.js";
 
 /**
  * Every club FriendGroup (including the auto-created "Announcements" group)

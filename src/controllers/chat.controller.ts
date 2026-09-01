@@ -78,42 +78,7 @@ export async function createConversation(
     const userId = req.session!.user.id;
     const { type, participantIds, relatedEntityId, metadata } = req.body;
 
-    // Ensure the creator is included in participants
     const allParticipants = Array.from(new Set([userId, ...participantIds]));
-
-    // Check privacy settings for DIRECT messages
-    if (type === "DIRECT" && participantIds.length > 0) {
-      const receiverId = participantIds.find((id: string) => id !== userId);
-      if (receiverId) {
-        const receiverPrefs = await prisma.userPreferences.findUnique({
-          where: { userId: receiverId },
-          select: { allowDMsFrom: true },
-        });
-
-        const allowDMsFrom = receiverPrefs?.allowDMsFrom || "everyone";
-
-        if (allowDMsFrom === "none") {
-          ApiResponse.error(res, "This user does not accept direct messages", 400, ErrorCode.INVALID_INPUT);
-          return;
-        }
-
-        if (allowDMsFrom === "friends") {
-          const isFriend = await prisma.friendship.findFirst({
-            where: {
-              OR: [
-                { senderId: userId, receiverId, status: "ACCEPTED" },
-                { senderId: receiverId, receiverId: userId, status: "ACCEPTED" },
-              ],
-            },
-          });
-          
-          if (!isFriend) {
-            ApiResponse.error(res, "This user only accepts direct messages from friends", 400, ErrorCode.INVALID_INPUT);
-            return;
-          }
-        }
-      }
-    }
 
     const conversation = await ChatService.createConversation({
       type,
@@ -125,12 +90,16 @@ export async function createConversation(
 
     const hydrated = await hydrateConversation(conversation.toObject ? conversation.toObject() : conversation);
     ApiResponse.created(res, hydrated, "Conversation created");
-  } catch (error) {
-    ApiResponse.internalError(
-      res,
-      "Failed to create conversation",
-      error as Error,
-    );
+  } catch (error: any) {
+    if (error.message.includes("accepts direct messages")) {
+      ApiResponse.error(res, error.message, 400, ErrorCode.INVALID_INPUT);
+    } else {
+      ApiResponse.internalError(
+        res,
+        "Failed to create conversation",
+        error as Error,
+      );
+    }
   }
 }
 
@@ -319,7 +288,7 @@ export async function sendMessage(req: Request, res: Response): Promise<void> {
       attachments,
       location,
       replyTo,
-    });
+    } as import("../services/chat/chat.types.js").SendMessageInput);
 
     // Real-time broadcast + push so a REST-sent message reaches the
     // recipient even when the sender's socket is down (otherwise it would
