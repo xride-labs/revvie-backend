@@ -19,6 +19,7 @@ import {
   createReviewSchema,
   createListingOfferSchema,
   updateListingOfferSchema,
+  createSavedSearchSchema,
   paginationSchema,
 } from "../../validators/schemas.js";
 import {
@@ -27,8 +28,12 @@ import {
   isUserPro,
 } from "../../lib/subscription.js";
 import { requireMarketplaceEnabled } from "../../middlewares/appSettings.js";
+import { boundingBox, haversineDistance } from "../../lib/utils/geo.js";
 
 const router = Router();
+
+/** Ceiling on rows scanned for the in-memory radius filter on GET /. */
+const GEO_SCAN_CAP = 2000;
 
 // All marketplace routes require authentication
 router.use(requireAuth);
@@ -105,9 +110,34 @@ async function isAdminOrCoAdmin(userId: string): Promise<boolean> {
  *           type: string
  *           enum: [ACTIVE, SOLD, INACTIVE]
  *         description: Filter by listing status (default ACTIVE)
+ *       - in: query
+ *         name: lat
+ *         schema:
+ *           type: number
+ *         description: >
+ *           Latitude for optional geo filtering. Must be provided together
+ *           with lng; omit both to browse without a location filter.
+ *       - in: query
+ *         name: lng
+ *         schema:
+ *           type: number
+ *         description: >
+ *           Longitude for optional geo filtering. Must be provided together
+ *           with lat.
+ *       - in: query
+ *         name: radiusKm
+ *         schema:
+ *           type: number
+ *           default: 25
+ *         description: >
+ *           Search radius in kilometres, only used when lat/lng are
+ *           provided.
  *     responses:
  *       200:
- *         description: List of marketplace listings
+ *         description: >
+ *           List of marketplace listings. When lat/lng are supplied, each
+ *           listing in the response also includes a `distanceKm` field
+ *           (distance from the given point, in kilometres).
  *         content:
  *           application/json:
  *             schema:
@@ -137,10 +167,12 @@ router.get(
   "/",
   validateQuery(listingQuerySchema),
   asyncHandler(async (req: Request, res: Response) => {
+    const session = (req as any).session;
     const {
       page,
       limit,
       category,
+      subcategory,
       minPrice,
       maxPrice,
       condition,
@@ -148,11 +180,16 @@ router.get(
       search,
       featured,
       sellerId,
+      sort,
+      lat,
+      lng,
+      radiusKm,
     } = req.query as any;
     const skip = (page - 1) * limit;
 
     const where: any = { status: status || "ACTIVE" };
     if (category) where.category = category;
+    if (subcategory) where.subcategory = subcategory;
     if (condition) where.condition = condition;
     if (sellerId) where.sellerId = sellerId;
     if (featured === "true") where.featured = true;
@@ -177,24 +214,102 @@ router.get(
     // default to PUBLIC) show here as usual.
     where.visibility = { not: "CLUB_ONLY" };
 
-    const [listings, total] = await Promise.all([
-      prisma.marketplaceListing.findMany({
+    // Featured (Pro-boosted) listings always sort first regardless of the
+    // requested sort — `sort` only controls the tiebreak within/after that.
+    // `trending` proxies "activity" as offer + interest volume (no view
+    // tracking exists) since it's the closest real signal available.
+    const orderBy: any[] = [{ featured: "desc" }];
+    switch (sort) {
+      case "price_asc":
+        orderBy.push({ price: "asc" });
+        break;
+      case "price_desc":
+        orderBy.push({ price: "desc" });
+        break;
+      case "rating":
+        orderBy.push({ avgRating: "desc" });
+        break;
+      case "trending":
+        orderBy.push({ offers: { _count: "desc" } }, { interests: { _count: "desc" } });
+        break;
+    }
+    orderBy.push({ createdAt: "desc" });
+
+    const isGeo = lat !== undefined && lng !== undefined;
+    let listings: any[];
+    let total: number;
+
+    if (isGeo) {
+      const bbox = boundingBox(lat, lng, radiusKm);
+      where.latitude = { not: null, gte: bbox.minLat, lte: bbox.maxLat };
+      where.longitude = { not: null, gte: bbox.minLng, lte: bbox.maxLng };
+
+      // The bbox is a rectangular superset of the true circle, so a
+      // Prisma-level skip/take/count against it alone would return short
+      // pages and an inflated total. Fetch the (capped) candidate set
+      // instead, narrow it to the true circle in memory, then paginate by
+      // hand.
+      const candidates = await prisma.marketplaceListing.findMany({
         where,
-        skip,
-        take: limit,
-        // Featured (Pro-boosted) listings sort first; ties broken by recency.
-        // The marketplace_featured_idx covers this query.
-        orderBy: [{ featured: "desc" }, { createdAt: "desc" }],
+        take: GEO_SCAN_CAP,
+        orderBy,
         include: {
           seller: {
-            select: { id: true, name: true, avatar: true },
+            select: { id: true, name: true, avatar: true, phoneVerified: true },
           },
         },
-      }),
-      prisma.marketplaceListing.count({ where }),
-    ]);
+      });
+      if (candidates.length === GEO_SCAN_CAP) {
+        console.warn(
+          `[marketplace] geo scan hit GEO_SCAN_CAP (${GEO_SCAN_CAP}) for lat=${lat} lng=${lng} radiusKm=${radiusKm}`,
+        );
+      }
 
-    ApiResponse.paginated(res, listings, {
+      const inCircle: any[] = [];
+      for (const l of candidates) {
+        if (l.latitude == null || l.longitude == null) continue;
+        const d = haversineDistance(lat, lng, l.latitude, l.longitude);
+        if (d > radiusKm) continue;
+        inCircle.push({ ...l, distanceKm: Math.round(d * 10) / 10 });
+      }
+      total = inCircle.length;
+      listings = inCircle.slice(skip, skip + limit);
+    } else {
+      const [nonGeoListings, nonGeoTotal] = await Promise.all([
+        prisma.marketplaceListing.findMany({
+          where,
+          skip,
+          take: limit,
+          orderBy,
+          include: {
+            seller: {
+              select: { id: true, name: true, avatar: true, phoneVerified: true },
+            },
+          },
+        }),
+        prisma.marketplaceListing.count({ where }),
+      ]);
+      listings = nonGeoListings;
+      total = nonGeoTotal;
+    }
+
+    // Batched, not per-row: which of these listings has the viewer wishlisted.
+    const wishlisted = session?.user?.id
+      ? await prisma.wishlist.findMany({
+          where: {
+            userId: session.user.id,
+            listingId: { in: listings.map((l) => l.id) },
+          },
+          select: { listingId: true },
+        })
+      : [];
+    const wishlistedIds = new Set(wishlisted.map((w) => w.listingId));
+    const withWishlist = listings.map((l) => ({
+      ...l,
+      isWishlisted: wishlistedIds.has(l.id),
+    }));
+
+    ApiResponse.paginated(res, withWishlist, {
       page,
       limit,
       total,
@@ -308,6 +423,282 @@ router.get(
 );
 
 /**
+ * GET /api/marketplace/wishlist
+ * The current user's saved (hearted) listings, newest-saved first.
+ * Registered before GET /:id so "wishlist" is never matched as a listing id.
+ */
+router.get(
+  "/wishlist",
+  asyncHandler(async (req: Request, res: Response) => {
+    const session = (req as any).session;
+    const { page = 1, limit = 20 } = req.query as any;
+    const pageNum = Math.max(1, parseInt(String(page), 10) || 1);
+    const limitNum = Math.min(100, Math.max(1, parseInt(String(limit), 10) || 20));
+    const skip = (pageNum - 1) * limitNum;
+
+    const [saved, total] = await Promise.all([
+      prisma.wishlist.findMany({
+        where: { userId: session.user.id },
+        orderBy: { createdAt: "desc" },
+        skip,
+        take: limitNum,
+        include: {
+          listing: {
+            include: {
+              seller: { select: { id: true, name: true, avatar: true, phoneVerified: true } },
+            },
+          },
+        },
+      }),
+      prisma.wishlist.count({ where: { userId: session.user.id } }),
+    ]);
+
+    const listings = saved
+      .filter((w) => w.listing) // listing may have been deleted since saving
+      .map((w) => ({ ...w.listing, isWishlisted: true }));
+
+    ApiResponse.paginated(res, listings, {
+      page: pageNum,
+      limit: limitNum,
+      total,
+      totalPages: Math.ceil(total / limitNum),
+    });
+  }),
+);
+
+/**
+ * POST /api/marketplace/:id/wishlist
+ * Toggle saving a listing. Body: {} — idempotent toggle, not a set operation.
+ */
+router.post(
+  "/:id/wishlist",
+  validateParams(idParamSchema),
+  asyncHandler(async (req: Request, res: Response) => {
+    const session = (req as any).session;
+    const { id } = req.params;
+
+    const listing = await prisma.marketplaceListing.findUnique({ where: { id } });
+    if (!listing) {
+      return ApiResponse.notFound(res, "Listing not found", ErrorCode.LISTING_NOT_FOUND);
+    }
+
+    const existing = await prisma.wishlist.findUnique({
+      where: { userId_listingId: { userId: session.user.id, listingId: id } },
+    });
+
+    if (existing) {
+      await prisma.wishlist.delete({ where: { id: existing.id } });
+      return ApiResponse.success(res, { wishlisted: false }, "Removed from wishlist");
+    }
+
+    await prisma.wishlist.create({
+      data: { userId: session.user.id, listingId: id },
+    });
+    ApiResponse.success(res, { wishlisted: true }, "Saved to wishlist");
+  }),
+);
+
+/**
+ * GET /api/marketplace/recently-viewed
+ * Most-recently-viewed listings first. Registered before GET /:id so
+ * "recently-viewed" is never matched as a listing id.
+ */
+router.get(
+  "/recently-viewed",
+  asyncHandler(async (req: Request, res: Response) => {
+    const session = (req as any).session;
+    const limit = Math.min(50, Math.max(1, parseInt(String(req.query.limit ?? "20"), 10) || 20));
+
+    const viewed = await prisma.recentlyViewedListing.findMany({
+      where: { userId: session.user.id },
+      orderBy: { viewedAt: "desc" },
+      take: limit,
+      include: {
+        listing: {
+          include: {
+            seller: { select: { id: true, name: true, avatar: true, phoneVerified: true } },
+          },
+        },
+      },
+    });
+
+    const listings = viewed
+      .filter((v) => v.listing && v.listing.status !== "DRAFT")
+      .map((v) => ({ ...v.listing, viewedAt: v.viewedAt }));
+
+    ApiResponse.success(res, { listings });
+  }),
+);
+
+/**
+ * POST /api/marketplace/:id/view
+ * Records/bumps a view for "Recently Viewed". Idempotent per (user, listing)
+ * — repeat views just bump viewedAt rather than creating a log of rows.
+ */
+router.post(
+  "/:id/view",
+  validateParams(idParamSchema),
+  asyncHandler(async (req: Request, res: Response) => {
+    const session = (req as any).session;
+    const { id } = req.params;
+
+    const listing = await prisma.marketplaceListing.findUnique({
+      where: { id },
+      select: { id: true, sellerId: true },
+    });
+    if (!listing) {
+      return ApiResponse.notFound(res, "Listing not found", ErrorCode.LISTING_NOT_FOUND);
+    }
+
+    // Don't clutter a seller's own "recently viewed" with their own listing.
+    if (listing.sellerId !== session.user.id) {
+      await prisma.recentlyViewedListing.upsert({
+        where: { userId_listingId: { userId: session.user.id, listingId: id } },
+        create: { userId: session.user.id, listingId: id },
+        update: { viewedAt: new Date() },
+      });
+    }
+
+    ApiResponse.success(res, { recorded: true });
+  }),
+);
+
+/**
+ * Saved Searches — bookmarked filter combinations for the Saved screen's
+ * "Searches" tab. No push/alerting infra; re-run on demand from the client.
+ */
+router.get(
+  "/saved-searches",
+  asyncHandler(async (req: Request, res: Response) => {
+    const session = (req as any).session;
+    const searches = await prisma.savedSearch.findMany({
+      where: { userId: session.user.id },
+      orderBy: { createdAt: "desc" },
+    });
+    ApiResponse.success(res, { searches });
+  }),
+);
+
+router.post(
+  "/saved-searches",
+  validateBody(createSavedSearchSchema),
+  asyncHandler(async (req: Request, res: Response) => {
+    const session = (req as any).session;
+    const { label, category, subcategory, search, minPrice, maxPrice, condition } = req.body;
+
+    const saved = await prisma.savedSearch.create({
+      data: {
+        userId: session.user.id,
+        label,
+        category,
+        subcategory,
+        search,
+        minPrice,
+        maxPrice,
+        condition,
+      },
+    });
+
+    ApiResponse.created(res, { search: saved }, "Search saved");
+  }),
+);
+
+router.delete(
+  "/saved-searches/:id",
+  asyncHandler(async (req: Request, res: Response) => {
+    const session = (req as any).session;
+    const { id } = req.params;
+
+    const existing = await prisma.savedSearch.findUnique({ where: { id } });
+    if (!existing || existing.userId !== session.user.id) {
+      return ApiResponse.notFound(res, "Saved search not found");
+    }
+
+    await prisma.savedSearch.delete({ where: { id } });
+    ApiResponse.success(res, null, "Saved search removed");
+  }),
+);
+
+/**
+ * GET /api/marketplace/dashboard-summary
+ * "My Marketplace" overview: selling side (active/draft/sold listings,
+ * pending offers, earnings) and buying side (orders, wishlist, recently
+ * viewed). Earnings/orders are derived from DEAL_DONE offers — there is no
+ * real payment/checkout system, consistent with the marketplace having no
+ * cart; this mirrors what the seller and buyer already agreed to offline.
+ */
+router.get(
+  "/dashboard-summary",
+  asyncHandler(async (req: Request, res: Response) => {
+    const session = (req as any).session;
+    const userId = session.user.id;
+
+    const [
+      activeListings,
+      draftListings,
+      soldListings,
+      pendingOffers,
+      dealsAsSeller,
+      dealsAsBuyer,
+      wishlistCount,
+      recentlyViewedCount,
+    ] = await Promise.all([
+      prisma.marketplaceListing.count({ where: { sellerId: userId, status: "ACTIVE" } }),
+      prisma.marketplaceListing.count({ where: { sellerId: userId, status: "DRAFT" } }),
+      prisma.marketplaceListing.count({ where: { sellerId: userId, status: "SOLD" } }),
+      prisma.listingOffer.count({
+        where: {
+          listing: { sellerId: userId },
+          status: { in: ["INTERESTED", "OFFER_MADE", "NEGOTIATING"] },
+        },
+      }),
+      prisma.listingOffer.findMany({
+        where: { listing: { sellerId: userId }, status: "DEAL_DONE" },
+        select: { offeredPrice: true, originalPrice: true },
+      }),
+      prisma.listingOffer.findMany({
+        where: { buyerId: userId, status: "DEAL_DONE" },
+        include: {
+          listing: {
+            select: { id: true, title: true, images: true, price: true, currency: true },
+          },
+        },
+        orderBy: { updatedAt: "desc" },
+        take: 20,
+      }),
+      prisma.wishlist.count({ where: { userId } }),
+      prisma.recentlyViewedListing.count({ where: { userId } }),
+    ]);
+
+    const totalEarnings = dealsAsSeller.reduce(
+      (sum, offer) => sum + (offer.offeredPrice ?? offer.originalPrice ?? 0),
+      0,
+    );
+
+    ApiResponse.success(res, {
+      selling: {
+        activeListings,
+        draftListings,
+        soldListings,
+        pendingOffers,
+        totalEarnings,
+        completedSales: dealsAsSeller.length,
+      },
+      buying: {
+        orders: dealsAsBuyer.map((offer) => ({
+          id: offer.id,
+          listing: offer.listing,
+          pricePaid: offer.offeredPrice ?? offer.originalPrice ?? offer.listing.price,
+          completedAt: offer.updatedAt,
+        })),
+        wishlistCount,
+        recentlyViewedCount,
+      },
+    });
+  }),
+);
+
+/**
  * @swagger
  * /api/marketplace/{id}:
  *   get:
@@ -358,6 +749,7 @@ router.get(
             username: true,
             avatar: true,
             reputationScore: true,
+            phoneVerified: true,
             _count: {
               select: {
                 marketplaceListings: true,
@@ -409,6 +801,17 @@ router.get(
     }
 
     const isSeller = listing.sellerId === session.user.id;
+
+    // Drafts are only visible to their own seller — mask as "not found"
+    // rather than 403 so non-owners can't even confirm a draft exists.
+    if (listing.status === "DRAFT" && !isSeller) {
+      return ApiResponse.notFound(
+        res,
+        "Listing not found",
+        ErrorCode.LISTING_NOT_FOUND,
+      );
+    }
+
     const myOffer =
       listing.offers.find((offer) => offer.buyerId === session.user.id) || null;
     const activeOffers = listing.offers.filter(
@@ -424,9 +827,26 @@ router.get(
       return best;
     }, null);
 
+    // Seller-level rating — the listing's own avgRating/reviewCount cover
+    // "how good is THIS item", this covers "how good is THIS seller" across
+    // everything they've sold. No cached field for it, so aggregate fresh;
+    // fine as a single extra query on a single-item detail endpoint (unlike
+    // the list endpoint, where this would be an N+1).
+    const [sellerRatingAgg, wishlisted] = await Promise.all([
+      prisma.review.aggregate({
+        where: { listing: { sellerId: listing.sellerId } },
+        _avg: { rating: true },
+        _count: true,
+      }),
+      prisma.wishlist.findUnique({
+        where: { userId_listingId: { userId: session.user.id, listingId: id } },
+      }),
+    ]);
+
     ApiResponse.success(res, {
       listing: {
         ...listing,
+        isWishlisted: !!wishlisted,
         offers: isSeller ? listing.offers : myOffer ? [myOffer] : [],
         offerSummary: {
           totalOffers: listing.offers.length,
@@ -435,7 +855,113 @@ router.get(
           myOffer,
           interestCount: listing.interests.length,
         },
+        seller: {
+          ...listing.seller,
+          avgRating: sellerRatingAgg._avg.rating ?? 0,
+          reviewCount: sellerRatingAgg._count,
+        },
       },
+    });
+  }),
+);
+
+/**
+ * GET /api/marketplace/sellers/:sellerId
+ * Seller Profile screen: reputation, verification, active listings, reviews,
+ * follow state. Uses its own :sellerId param (not :id) so it never collides
+ * with the listing-id routes below.
+ */
+router.get(
+  "/sellers/:sellerId",
+  asyncHandler(async (req: Request, res: Response) => {
+    const session = (req as any).session;
+    const { sellerId } = req.params;
+
+    const seller = await prisma.user.findUnique({
+      where: { id: sellerId },
+      select: {
+        id: true,
+        name: true,
+        username: true,
+        avatar: true,
+        coverImage: true,
+        bio: true,
+        location: true,
+        phoneVerified: true,
+        reputationScore: true,
+        createdAt: true,
+      },
+    });
+    if (!seller) {
+      return ApiResponse.notFound(res, "Seller not found", ErrorCode.USER_NOT_FOUND);
+    }
+
+    const [
+      ratingAgg,
+      activeListingsCount,
+      soldCount,
+      listings,
+      reviews,
+      followerCount,
+      followingCount,
+      isFollowing,
+      offersReceived,
+      offersRespondedTo,
+    ] = await Promise.all([
+      prisma.review.aggregate({
+        where: { listing: { sellerId } },
+        _avg: { rating: true },
+        _count: true,
+      }),
+      prisma.marketplaceListing.count({ where: { sellerId, status: "ACTIVE" } }),
+      prisma.marketplaceListing.count({ where: { sellerId, status: "SOLD" } }),
+      prisma.marketplaceListing.findMany({
+        where: { sellerId, status: "ACTIVE" },
+        orderBy: [{ featured: "desc" }, { createdAt: "desc" }],
+        take: 20,
+      }),
+      prisma.review.findMany({
+        where: { listing: { sellerId } },
+        include: { reviewer: { select: { id: true, name: true, avatar: true } } },
+        orderBy: { createdAt: "desc" },
+        take: 10,
+      }),
+      prisma.follow.count({ where: { followingId: sellerId } }),
+      prisma.follow.count({ where: { followerId: sellerId } }),
+      session?.user?.id && session.user.id !== sellerId
+        ? prisma.follow
+            .findUnique({
+              where: {
+                followerId_followingId: { followerId: session.user.id, followingId: sellerId },
+              },
+              select: { id: true },
+            })
+            .then((f) => !!f)
+        : Promise.resolve(false),
+      prisma.listingOffer.count({ where: { listing: { sellerId } } }),
+      // A response is any status transition away from the buyer's opening
+      // move — an honest proxy since there's no explicit "seller replied" flag.
+      prisma.listingOffer.count({
+        where: { listing: { sellerId }, status: { notIn: ["INTERESTED", "OFFER_MADE"] } },
+      }),
+    ]);
+
+    ApiResponse.success(res, {
+      seller: {
+        ...seller,
+        avgRating: ratingAgg._avg.rating ?? 0,
+        reviewCount: ratingAgg._count,
+        activeListingsCount,
+        soldCount,
+        followerCount,
+        followingCount,
+        isFollowing,
+        responseRate: offersReceived > 0
+          ? Math.round((offersRespondedTo / offersReceived) * 100)
+          : null,
+      },
+      listings,
+      reviews,
     });
   }),
 );
@@ -510,17 +1036,22 @@ router.post(
   validateBody(createListingSchema),
   asyncHandler(async (req: Request, res: Response) => {
     const session = (req as any).session;
-    const hasPro = await isUserPro(session.user.id);
+    const status: "ACTIVE" | "DRAFT" = req.body.status === "DRAFT" ? "DRAFT" : "ACTIVE";
 
-    if (!hasPro) {
-      const activeListingCount = await countUserActiveListings(session.user.id);
-      if (activeListingCount >= FREE_MARKETPLACE_LISTING_LIMIT) {
-        return ApiResponse.error(
-          res,
-          `Free users can only keep ${FREE_MARKETPLACE_LISTING_LIMIT} active marketplace listings. Upgrade to Revvie Pro for unlimited listings.`,
-          403,
-          ErrorCode.SUBSCRIPTION_REQUIRED,
-        );
+    // Drafts aren't live listings yet, so they don't count against the
+    // free-tier active-listing limit.
+    if (status === "ACTIVE") {
+      const hasPro = await isUserPro(session.user.id);
+      if (!hasPro) {
+        const activeListingCount = await countUserActiveListings(session.user.id);
+        if (activeListingCount >= FREE_MARKETPLACE_LISTING_LIMIT) {
+          return ApiResponse.error(
+            res,
+            `Free users can only keep ${FREE_MARKETPLACE_LISTING_LIMIT} active marketplace listings. Upgrade to Revvie Pro for unlimited listings.`,
+            403,
+            ErrorCode.SUBSCRIPTION_REQUIRED,
+          );
+        }
       }
     }
 
@@ -689,6 +1220,30 @@ router.patch(
       longitude,
       status,
     } = req.body;
+
+    // Publishing a draft (or reactivating an inactive listing) still has to
+    // clear the free-tier active-listing gate — otherwise a free user could
+    // stockpile unlimited drafts and publish past the limit via PATCH.
+    if (status === "ACTIVE") {
+      const current = await prisma.marketplaceListing.findUnique({
+        where: { id },
+        select: { status: true, sellerId: true },
+      });
+      if (current && current.status !== "ACTIVE") {
+        const hasPro = await isUserPro(current.sellerId);
+        if (!hasPro) {
+          const activeListingCount = await countUserActiveListings(current.sellerId);
+          if (activeListingCount >= FREE_MARKETPLACE_LISTING_LIMIT) {
+            return ApiResponse.error(
+              res,
+              `Free users can only keep ${FREE_MARKETPLACE_LISTING_LIMIT} active marketplace listings. Upgrade to Revvie Pro for unlimited listings.`,
+              403,
+              ErrorCode.SUBSCRIPTION_REQUIRED,
+            );
+          }
+        }
+      }
+    }
 
     const listing = await prisma.marketplaceListing.update({
       where: { id },
@@ -928,6 +1483,21 @@ router.post(
         reviewer: {
           select: { id: true, name: true, avatar: true },
         },
+      },
+    });
+
+    // Recompute the listing's denormalized rating so list-page cards and
+    // "sort by rating" stay correct without a join at read time.
+    const agg = await prisma.review.aggregate({
+      where: { listingId: id },
+      _avg: { rating: true },
+      _count: true,
+    });
+    await prisma.marketplaceListing.update({
+      where: { id },
+      data: {
+        avgRating: agg._avg.rating ?? 0,
+        reviewCount: agg._count,
       },
     });
 

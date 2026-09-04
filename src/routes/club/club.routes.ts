@@ -54,6 +54,10 @@ const clubGroupQuerySchema = z.object({
   search: z.string().max(120).optional(),
 });
 
+const clubRequestsQuerySchema = z.object({
+  status: z.enum(["PENDING", "APPROVED", "REJECTED", "ALL"]).default("PENDING"),
+});
+
 const moderationBodySchema = z.object({
   action: z.enum([
     "PROMOTE",
@@ -650,22 +654,9 @@ router.get(
 router.get(
   "/:id/requests",
   validateParams(idParamSchema),
+  validateQuery(clubRequestsQuerySchema),
   requireClubMembership("ADMIN", "id"),
-  asyncHandler(async (req: Request, res: Response) => {
-    const { id } = req.params;
-
-    const requests = await prisma.clubJoinRequest.findMany({
-      where: { clubId: id, status: "PENDING" },
-      include: {
-        user: {
-          select: { id: true, name: true, avatar: true, email: true },
-        },
-      },
-      orderBy: { createdAt: "desc" },
-    });
-
-    ApiResponse.success(res, { requests });
-  }),
+  asyncHandler(ClubController.getJoinRequests),
 );
 
 /**

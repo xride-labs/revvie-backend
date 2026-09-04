@@ -754,7 +754,10 @@ router.post(
  * /api/media/upload/bike/{bikeId}:
  *   post:
  *     summary: Upload bike image
- *     description: Upload image for a specific bike. Must own the bike. Image is resized to 1000x750px and delivered via Cloudinary.
+ *     description: |
+ *       Upload image for a specific bike. Must own the bike. Image is resized to 1000x750px and delivered via Cloudinary.
+ *       Images are appended to the bike's photo gallery (up to 5 photos per bike); the most recently
+ *       uploaded photo also mirrors into the legacy single-photo `image` field for back-compat.
  *     tags: [Media]
  *     security:
  *       - cookieAuth: []
@@ -796,6 +799,17 @@ router.post(
  *                     imageUrl:
  *                       type: string
  *                       format: uri
+ *                     images:
+ *                       type: array
+ *                       items:
+ *                         type: string
+ *                       description: Updated array of all bike images (capped at 5)
+ *       400:
+ *         description: File required or max photos reached
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
  *       401:
  *         $ref: '#/components/responses/Unauthorized'
  *       403:
@@ -824,7 +838,7 @@ router.post(
     // Verify ownership
     const bike = await prisma.bike.findUnique({
       where: { id: bikeId },
-      select: { userId: true },
+      select: { userId: true, images: true },
     });
 
     if (!bike) {
@@ -838,13 +852,26 @@ router.post(
       );
     }
 
+    // Check max photo limit
+    const currentImages = bike.images ?? [];
+    if (currentImages.length >= 5) {
+      return ApiResponse.error(
+        res,
+        "Maximum 5 photos allowed per bike",
+        400,
+        ErrorCode.INVALID_INPUT,
+      );
+    }
+
     try {
       const result = await uploadBikeImage(file, bikeId);
+      const updatedImages = [...currentImages, result.secureUrl];
 
-      // Update bike's image in database
+      // Update bike's image gallery in database; mirror the latest photo
+      // into the legacy single-photo `image` field for back-compat.
       await prisma.bike.update({
         where: { id: bikeId },
-        data: { image: result.secureUrl },
+        data: { image: result.secureUrl, images: updatedImages },
       });
 
       ApiResponse.success(
@@ -852,6 +879,7 @@ router.post(
         {
           media: result,
           imageUrl: result.secureUrl,
+          images: updatedImages,
         },
         "Bike image uploaded successfully",
       );

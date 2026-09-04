@@ -31,6 +31,18 @@ const changePasswordSchema = z.object({
     .regex(/[0-9]/, "Password must contain at least one number"),
 });
 
+// For accounts with no credential (password) yet - OTP-only, Google-only,
+// Apple-only signups - there is no "current password" to verify, so this is
+// deliberately a separate schema/endpoint from changePasswordSchema above.
+const setPasswordSchema = z.object({
+  newPassword: z
+    .string()
+    .min(8, "New password must be at least 8 characters")
+    .regex(/[A-Z]/, "Password must contain at least one uppercase letter")
+    .regex(/[a-z]/, "Password must contain at least one lowercase letter")
+    .regex(/[0-9]/, "Password must contain at least one number"),
+});
+
 // Emergency contact schemas — used by GET/POST/PATCH/DELETE under
 // /api/account/emergency-contacts. Phone is the only hard requirement so
 // the SOS flow always has something to dial; everything else is optional.
@@ -259,6 +271,11 @@ router.get(
     }
 
     const roles = user.userRoles?.map((r) => r.role) ?? [];
+    const credentialAccount = await prisma.account.findFirst({
+      where: { userId: user.id, providerId: "credential" },
+      select: { password: true },
+    });
+    const hasPassword = !!credentialAccount?.password;
     const subscription = await getCurrentBillingSubscription(user.id);
     const xpPoints = user.xpPoints ?? 0;
     const nextLevelXp = (user.level + 1) * 250;
@@ -275,6 +292,7 @@ router.get(
       name: user.name,
       email: user.email,
       onboardingCompleted: user.onboardingCompleted,
+      hasPassword,
       dob: user.dob,
       emailVerified: user.emailVerified,
       phoneVerified: user.phoneVerified,
@@ -503,40 +521,52 @@ router.patch(
       socialLinks,
     } = req.body;
 
-    const user = await prisma.user.update({
-      where: { id: session.user.id },
-      data: {
-        ...(name !== undefined && { name }),
-        ...(username !== undefined && { username }),
-        ...(bio !== undefined && { bio }),
-        ...(location !== undefined && { location }),
-        ...(dob !== undefined && { dob: new Date(dob) }),
-        ...(bloodType !== undefined && { bloodType }),
-        ...(avatar !== undefined && { avatar }),
-        ...(coverImage !== undefined && { coverImage }),
-        ...(interests !== undefined && { interests }),
-        ...(activityLevel !== undefined && { activityLevel }),
-        ...(level !== undefined && { level }),
-        ...(onboardingCompleted !== undefined && { onboardingCompleted }),
-        ...(ghostModeEnabled !== undefined && { ghostModeEnabled, ghostModeSince: ghostModeEnabled ? new Date() : null }),
-        ...(socialLinks !== undefined && { socialLinks }),
-      },
-      select: {
-        id: true,
-        email: true,
-        username: true,
-        name: true,
-        onboardingCompleted: true,
-        avatar: true,
-        coverImage: true,
-        phone: true,
-        bio: true,
-        location: true,
-        bloodType: true,
-        dob: true,
-        updatedAt: true,
-      },
-    });
+    let user;
+    try {
+      user = await prisma.user.update({
+        where: { id: session.user.id },
+        data: {
+          ...(name !== undefined && { name }),
+          ...(username !== undefined && { username }),
+          ...(bio !== undefined && { bio }),
+          ...(location !== undefined && { location }),
+          ...(dob !== undefined && { dob: new Date(dob) }),
+          ...(bloodType !== undefined && { bloodType }),
+          ...(avatar !== undefined && { avatar }),
+          ...(coverImage !== undefined && { coverImage }),
+          ...(interests !== undefined && { interests }),
+          ...(activityLevel !== undefined && { activityLevel }),
+          ...(level !== undefined && { level }),
+          ...(onboardingCompleted !== undefined && { onboardingCompleted }),
+          ...(ghostModeEnabled !== undefined && { ghostModeEnabled, ghostModeSince: ghostModeEnabled ? new Date() : null }),
+          ...(socialLinks !== undefined && { socialLinks }),
+        },
+        select: {
+          id: true,
+          email: true,
+          username: true,
+          name: true,
+          onboardingCompleted: true,
+          avatar: true,
+          coverImage: true,
+          phone: true,
+          bio: true,
+          location: true,
+          bloodType: true,
+          dob: true,
+          updatedAt: true,
+        },
+      });
+    } catch (err: any) {
+      // P2002 = unique constraint - only `username` is unique on this model,
+      // so a collision here always means "username taken". Surfaced as a
+      // clean 409 the client can show under the username field, instead of
+      // leaking a raw Prisma error as a generic 500.
+      if (err?.code === "P2002") {
+        return ApiResponse.conflict(res, "That username is already taken");
+      }
+      throw err;
+    }
     devLog("[AUTH] PATCH /me - Profile updated", { userId: user.id });
 
     ApiResponse.success(res, { user }, "Profile updated successfully");
@@ -612,6 +642,87 @@ router.post(
         error.body?.message || "Current password is incorrect",
         400,
         ErrorCode.INVALID_CREDENTIALS,
+      );
+    }
+  }),
+);
+
+/**
+ * @swagger
+ * /api/account/set-password:
+ *   post:
+ *     summary: Set a password for an account that doesn't have one yet
+ *     description: |
+ *       For accounts created via email OTP, Google, or Apple sign-in, which
+ *       never have a credential (password) account. Does not require a
+ *       current password, unlike /change-password. Fails with 400 if the
+ *       account already has a password - use /change-password instead.
+ *     tags: [Auth]
+ *     security:
+ *       - cookieAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - newPassword
+ *             properties:
+ *               newPassword:
+ *                 type: string
+ *                 format: password
+ *     responses:
+ *       200:
+ *         description: Password set successfully
+ *       400:
+ *         description: Account already has a password
+ *       401:
+ *         $ref: '#/components/responses/Unauthorized'
+ */
+router.post(
+  "/set-password",
+  requireAuth,
+  validateBody(setPasswordSchema),
+  asyncHandler(async (req: Request, res: Response) => {
+    const session = (req as any).session;
+    const { newPassword } = req.body;
+    devLog("[AUTH] POST /set-password", { userId: session.user.id });
+
+    const existing = await prisma.account.findFirst({
+      where: { userId: session.user.id, providerId: "credential" },
+      select: { id: true, password: true },
+    });
+    if (existing?.password) {
+      return ApiResponse.error(
+        res,
+        "This account already has a password. Use change password instead.",
+        400,
+        ErrorCode.VALIDATION_ERROR,
+      );
+    }
+
+    try {
+      await auth.api.setPassword({
+        headers: fromNodeHeaders(req.headers),
+        body: { newPassword },
+      });
+
+      devLog("[AUTH] POST /set-password - Password set", {
+        userId: session.user.id,
+      });
+
+      ApiResponse.success(res, null, "Password set successfully");
+    } catch (error: any) {
+      console.warn("[AUTH] POST /set-password - Failed", {
+        userId: session.user.id,
+        error: error.message,
+      });
+      return ApiResponse.error(
+        res,
+        error.body?.message || "Couldn't set password",
+        400,
+        ErrorCode.VALIDATION_ERROR,
       );
     }
   }),

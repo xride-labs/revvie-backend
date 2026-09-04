@@ -30,7 +30,8 @@ export async function listConversations(
       limit: limit ? parseInt(limit, 10) : undefined,
     });
 
-    const conversations = await hydrateParticipants(result.conversations);
+    const hydrated = await hydrateParticipants(result.conversations);
+    const conversations = await ChatService.enrichWithClubInfo(hydrated);
 
     ApiResponse.success(res, {
       conversations,
@@ -240,6 +241,82 @@ export async function muteConversation(
       error as Error,
     );
   }
+}
+
+/**
+ * DELETE /api/chat/conversations/:id
+ * Hide a conversation from the caller's own inbox — leaves it untouched for
+ * every other participant, unlike archiveConversation's global isActive
+ * flag (which is only ever driven internally, e.g. deleting a club group).
+ */
+export async function deleteConversation(req: Request, res: Response): Promise<void> {
+  try {
+    const { id } = req.params;
+    const userId = req.session!.user.id;
+    await ChatService.hideConversationForUser(id, userId);
+    ApiResponse.success(res, null, "Conversation deleted");
+  } catch (error) {
+    ApiResponse.internalError(res, "Failed to delete conversation", error as Error);
+  }
+}
+
+// ─── Message Requests ────────────────────────────────────────────────────────
+
+/**
+ * GET /api/chat/requests
+ * Pending DM requests where the current user is the receiver.
+ */
+export async function listMessageRequests(req: Request, res: Response): Promise<void> {
+  try {
+    const userId = req.session!.user.id;
+    const requests = await ChatService.listMessageRequests(userId);
+    const hydrated = await hydrateParticipants(requests);
+    ApiResponse.success(res, { requests: hydrated });
+  } catch (error) {
+    ApiResponse.internalError(res, "Failed to list message requests", error as Error);
+  }
+}
+
+async function respondToMessageRequest(
+  req: Request,
+  res: Response,
+  action: "accept" | "ignore",
+): Promise<void> {
+  try {
+    const { id } = req.params;
+    const userId = req.session!.user.id;
+
+    const conversation = await ChatService.respondToMessageRequest(id, userId, action);
+    if (!conversation) {
+      ApiResponse.notFound(res, "No pending request found", ErrorCode.NOT_FOUND);
+      return;
+    }
+
+    const hydrated = await hydrateConversation(conversation);
+    ApiResponse.success(
+      res,
+      hydrated,
+      action === "accept" ? "Request accepted" : "Request ignored",
+    );
+  } catch (error) {
+    ApiResponse.internalError(res, "Failed to respond to message request", error as Error);
+  }
+}
+
+/**
+ * POST /api/chat/conversations/:id/accept
+ * Accept a pending message request. Only the receiver may act on it.
+ */
+export async function acceptMessageRequest(req: Request, res: Response): Promise<void> {
+  return respondToMessageRequest(req, res, "accept");
+}
+
+/**
+ * POST /api/chat/conversations/:id/ignore
+ * Ignore a pending message request. Only the receiver may act on it.
+ */
+export async function ignoreMessageRequest(req: Request, res: Response): Promise<void> {
+  return respondToMessageRequest(req, res, "ignore");
 }
 
 // ─── Messages ────────────────────────────────────────────────────────────────

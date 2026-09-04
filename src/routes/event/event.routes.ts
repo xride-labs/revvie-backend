@@ -109,6 +109,7 @@ router.get(
       category,
       search,
       filter,
+      isFeatured,
       timeframe = "upcoming",
       page = "1",
       limit = "30",
@@ -161,6 +162,12 @@ router.get(
       where.clubId = { not: null };
     }
 
+    // Direct ?isFeatured=true param, independent of `filter` — same
+    // condition `filter=featured` sets, exposed as its own query key too.
+    if (isFeatured === "true") {
+      where.isFeatured = true;
+    }
+
     const [events, total] = await Promise.all([
       prisma.event.findMany({
         where,
@@ -179,7 +186,9 @@ router.get(
             select: { status: true },
           },
           _count: {
-            select: { participants: true, tickets: true },
+            // Filtered to ACCEPTED so "N going" doesn't fold in interested-only
+            // rows once /interested starts creating REQUESTED participants.
+            select: { participants: { where: { status: "ACCEPTED" } }, tickets: true },
           },
         },
         orderBy: { scheduledAt: timeframe === "past" ? "desc" : "asc" },
@@ -189,13 +198,27 @@ router.get(
       prisma.event.count({ where }),
     ]);
 
+    const eventIds = events.map((e) => e.id);
+    const interestedGroups = eventIds.length
+      ? await prisma.eventParticipant.groupBy({
+          by: ["eventId"],
+          where: { eventId: { in: eventIds }, status: "REQUESTED" },
+          _count: { _all: true },
+        })
+      : [];
+    const interestedByEvent = new Map(
+      interestedGroups.map((g) => [g.eventId, g._count._all]),
+    );
+
     const formatted = events.map((event) => {
       const userParticipation = event.participants[0]?.status;
       return {
         ...event,
         isAttending: userParticipation === "ACCEPTED",
+        isInterested: userParticipation === "REQUESTED",
         isHost: event.creatorId === userId,
         participantCount: event._count.participants,
+        interestedCount: interestedByEvent.get(event.id) ?? 0,
         ticketsSold: event._count.tickets,
       };
     });
@@ -244,7 +267,11 @@ router.get(
           orderBy: { createdAt: "asc" },
         },
         _count: {
-          select: { participants: true, tickets: true, orders: true },
+          select: {
+            participants: { where: { status: "ACCEPTED" } },
+            tickets: true,
+            orders: true,
+          },
         },
       },
     });
@@ -254,21 +281,30 @@ router.get(
     }
 
     const userParticipation = event.participants.find((p) => p.userId === userId);
-    const userTickets = await prisma.eventTicket.findMany({
-      where: { eventId: id, userId },
-      include: { tier: true, order: true },
-    });
+    const [userTickets, interestedCount] = await Promise.all([
+      prisma.eventTicket.findMany({
+        where: { eventId: id, userId },
+        include: { tier: true, order: true },
+      }),
+      prisma.eventParticipant.count({ where: { eventId: id, status: "REQUESTED" } }),
+    ]);
 
     const isHost = event.creatorId === userId || event.club?.ownerId === userId;
 
     const formatted = {
       ...event,
       isAttending: userParticipation?.status === "ACCEPTED",
+      isInterested: userParticipation?.status === "REQUESTED",
       isHost,
       participantCount: event._count.participants,
+      interestedCount,
       ticketsSold: event._count.tickets,
       myTickets: userTickets,
-      attendees: event.participants.map((p) => p.user),
+      // Attendee roster only ever held ACCEPTED rows before /interested
+      // existed; keep it that way rather than mixing in interested-only users.
+      attendees: event.participants
+        .filter((p) => p.status === "ACCEPTED")
+        .map((p) => p.user),
     };
 
     ApiResponse.success(res, formatted, "Event details retrieved successfully");
@@ -781,7 +817,8 @@ router.post(
     const eventRecord = await prisma.event.findUnique({
       where: { id },
       include: {
-        _count: { select: { participants: true } },
+        // Capacity is about who's actually going, not who's merely interested.
+        _count: { select: { participants: { where: { status: "ACCEPTED" } } } },
       },
     });
 
@@ -804,6 +841,43 @@ router.post(
     });
 
     ApiResponse.success(res, participation, "Joined event successfully");
+  })
+);
+
+// ── 10b. Toggle "interested" (lighter-weight than a full RSVP) ──
+router.post(
+  "/:id/interested",
+  validateParams(idParamSchema),
+  asyncHandler(async (req: Request, res: Response) => {
+    const { id } = req.params;
+    const userId = req.session!.user.id;
+
+    const eventRecord = await prisma.event.findUnique({
+      where: { id },
+      select: { status: true },
+    });
+    if (!eventRecord) return ApiResponse.notFound(res, "Event not found");
+    if (eventRecord.status === "CANCELLED") {
+      return ApiResponse.badRequest(res, "Cannot mark interest on a cancelled event");
+    }
+
+    const existing = await prisma.eventParticipant.findUnique({
+      where: { eventId_userId: { eventId: id, userId } },
+    });
+
+    if (existing?.status === "ACCEPTED") {
+      return ApiResponse.conflict(res, "You're already going to this event");
+    }
+
+    if (existing?.status === "REQUESTED") {
+      await prisma.eventParticipant.delete({ where: { id: existing.id } });
+      return ApiResponse.success(res, { interested: false }, "Interest removed");
+    }
+
+    await prisma.eventParticipant.create({
+      data: { eventId: id, userId, status: "REQUESTED" },
+    });
+    ApiResponse.success(res, { interested: true }, "Marked as interested");
   })
 );
 

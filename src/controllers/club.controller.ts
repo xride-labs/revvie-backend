@@ -1,7 +1,8 @@
 import prisma from "../lib/prisma.js";
 import { Request, Response } from "express";
 import { ClubService } from "../services/club/club.service.js";
-import { ApiResponse } from "../lib/utils/apiResponse.js";
+import { ApiResponse, ErrorCode } from "../lib/utils/apiResponse.js";
+import { isUserPro, countUserOwnedClubs, FREE_CLUB_OWNERSHIP_LIMIT, FREE_CLUBS_JOINED_LIMIT } from "../lib/subscription.js";
 
 export class ClubController {
   static async getClubs(req: Request, res: Response) {
@@ -46,6 +47,14 @@ export class ClubController {
     }
   }
 
+  static async getJoinRequests(req: Request, res: Response) {
+    const { id } = req.params;
+    const session = (req as any).session;
+    const status = (req.query.status as string) || "PENDING";
+    const data = await ClubService.getJoinRequests(id, session.user.id, status as any);
+    ApiResponse.success(res, data);
+  }
+
   static async getClubRides(req: Request, res: Response) {
     const { id } = req.params;
     const session = (req as any).session;
@@ -68,6 +77,18 @@ export class ClubController {
   static async createClub(req: Request, res: Response) {
     const session = (req as any).session;
     try {
+      const hasPro = await isUserPro(session.user.id);
+      if (!hasPro) {
+        const ownedCount = await countUserOwnedClubs(session.user.id);
+        if (ownedCount >= FREE_CLUB_OWNERSHIP_LIMIT) {
+          return ApiResponse.forbidden(
+            res,
+            `Free users can own up to ${FREE_CLUB_OWNERSHIP_LIMIT} clubs. Upgrade to Revvie Pro to create more.`,
+            ErrorCode.SUBSCRIPTION_REQUIRED,
+          );
+        }
+      }
+
       const club = await ClubService.createClub(req.body, session.user.id);
       import("../services/club/groupChat.service.js").then((m) => {
         m.ensureAnnouncementsGroup(club.id).catch(console.error);
@@ -81,8 +102,8 @@ export class ClubController {
   static async updateClub(req: Request, res: Response) {
     const { id } = req.params;
     try {
-      await ClubService.updateClub(id, req.body);
-      ApiResponse.success(res, null, "Club updated successfully");
+      const club = await ClubService.updateClub(id, req.body);
+      ApiResponse.success(res, { club }, "Club updated successfully");
     } catch (err: any) {
       ApiResponse.error(res, err.message, 400);
     }
@@ -122,6 +143,12 @@ export class ClubController {
       if (err.message === "BANNED") return ApiResponse.forbidden(res, "You are banned from this community");
       if (err.message === "ALREADY_MEMBER") return ApiResponse.conflict(res, "You are already a member of this club");
       if (err.message === "PENDING_REQUEST") return ApiResponse.conflict(res, "You already have a pending join request");
+      if (err.message === "JOIN_LIMIT_REACHED")
+        return ApiResponse.forbidden(
+          res,
+          `Free users can join up to ${FREE_CLUBS_JOINED_LIMIT} clubs. Upgrade to Revvie Pro to join more.`,
+          ErrorCode.SUBSCRIPTION_REQUIRED,
+        );
       throw err;
     }
   }

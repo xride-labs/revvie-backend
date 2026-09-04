@@ -6,6 +6,7 @@ import {
   ConversationType,
   ParticipantRole,
   DisappearingPolicy,
+  RequestStatus,
   IConversation,
   IParticipant,
 } from "../../models/chat.model.js";
@@ -78,19 +79,17 @@ export class ConversationService {
       throw new Error("This user does not accept direct messages");
     }
 
-    if (allowDMsFrom === "friends") {
-      const isFriend = await prisma.friendship.findFirst({
-        where: {
-          OR: [
-            { senderId: createdBy, receiverId, status: "ACCEPTED" },
-            { senderId: receiverId, receiverId: createdBy, status: "ACCEPTED" },
-          ],
-        },
-      });
-      
-      if (!isFriend) {
-        throw new Error("This user only accepts direct messages from friends");
-      }
+    const isFriend = await prisma.friendship.findFirst({
+      where: {
+        OR: [
+          { senderId: createdBy, receiverId, status: "ACCEPTED" },
+          { senderId: receiverId, receiverId: createdBy, status: "ACCEPTED" },
+        ],
+      },
+    });
+
+    if (allowDMsFrom === "friends" && !isFriend) {
+      throw new Error("This user only accepts direct messages from friends");
     }
 
     const existing = await Conversation.findOne({
@@ -102,6 +101,9 @@ export class ConversationService {
 
     if (existing) return existing;
 
+    // A DM opened by a non-friend (the "everyone" default lets anyone
+    // start one) lands as a pending request rather than straight into the
+    // receiver's main inbox — see RequestStatus.
     return Conversation.create({
       type: ConversationType.DIRECT,
       participants: [
@@ -109,6 +111,8 @@ export class ConversationService {
         { userId: userIdB, role: ParticipantRole.MEMBER },
       ],
       createdBy,
+      requestStatus: isFriend ? RequestStatus.ACCEPTED : RequestStatus.PENDING,
+      requestedBy: isFriend ? undefined : createdBy,
     });
   }
 
@@ -173,8 +177,18 @@ export class ConversationService {
     const clampedLimit = Math.min(limit, 50);
 
     const filter: any = {
-      "participants.userId": userId,
       isActive: true,
+      // Correlated on the SAME participant sub-document (not just "some
+      // participant has userId X") so a conversation you've deleted for
+      // yourself doesn't reappear because the other participant hasn't
+      // deleted theirs.
+      participants: { $elemMatch: { userId, isHidden: { $ne: true } } },
+      // Hide pending/ignored message requests from the receiving side's main
+      // list — they only show up there via listMessageRequests(). The
+      // requester still sees their own outgoing conversation regardless of
+      // status. $nin also matches documents predating this field (no
+      // backfill needed): a missing requestStatus counts as "not pending".
+      $or: [{ requestStatus: { $nin: ["pending", "ignored"] } }, { requestedBy: userId }],
     };
 
     if (type) filter.type = type;
@@ -285,6 +299,21 @@ export class ConversationService {
     );
   }
 
+  /** "Delete" a conversation for one participant — hides it from their
+   * inbox without touching shared history or the other participant(s). */
+  static async hideForParticipant(
+    conversationId: string,
+    userId: string,
+  ): Promise<void> {
+    await Conversation.updateOne(
+      {
+        _id: new Types.ObjectId(conversationId),
+        "participants.userId": userId,
+      },
+      { $set: { "participants.$.isHidden": true } },
+    );
+  }
+
   static async setDisappearingPolicy(
     conversationId: string,
     policy: DisappearingPolicy,
@@ -302,5 +331,80 @@ export class ConversationService {
       { $set: { isActive: false } },
       { new: true },
     );
+  }
+
+  /** Pending DM requests where `userId` is the receiver (not the sender). */
+  static async listMessageRequests(userId: string): Promise<IConversation[]> {
+    const requests = await Conversation.find({
+      type: ConversationType.DIRECT,
+      "participants.userId": userId,
+      isActive: true,
+      requestStatus: RequestStatus.PENDING,
+      requestedBy: { $ne: userId },
+    })
+      .sort({ createdAt: -1 })
+      .lean();
+    return requests as unknown as IConversation[];
+  }
+
+  /**
+   * Accept or ignore a pending message request. Only the receiver may act
+   * on it — the sender attempting to accept/ignore their own outgoing
+   * request is rejected (returns null, same as "not found").
+   */
+  static async respondToMessageRequest(
+    conversationId: string,
+    userId: string,
+    action: "accept" | "ignore",
+  ): Promise<IConversation | null> {
+    if (!Types.ObjectId.isValid(conversationId)) return null;
+    return Conversation.findOneAndUpdate(
+      {
+        _id: new Types.ObjectId(conversationId),
+        "participants.userId": userId,
+        requestStatus: RequestStatus.PENDING,
+        requestedBy: { $ne: userId },
+      },
+      {
+        $set: {
+          requestStatus: action === "accept" ? RequestStatus.ACCEPTED : RequestStatus.IGNORED,
+        },
+      },
+      { new: true },
+    );
+  }
+
+  /**
+   * Tags each GROUP conversation with its club (if `relatedEntityId` points
+   * to a club-linked FriendGroup) so the mobile inbox can split Club vs
+   * Riders without a second round trip, and render the OFFICIAL badge for
+   * a club's announcements channel.
+   */
+  static async enrichWithClubInfo<
+    T extends { type: string; relatedEntityId?: string | null },
+  >(
+    conversations: T[],
+  ): Promise<(T & { club: { id: string; name: string } | null; isAnnouncement: boolean })[]> {
+    const groupIds = conversations
+      .filter((c) => c.type === ConversationType.GROUP && c.relatedEntityId)
+      .map((c) => c.relatedEntityId as string);
+
+    if (!groupIds.length) {
+      return conversations.map((c) => ({ ...c, club: null, isAnnouncement: false }));
+    }
+
+    const groups = await prisma.friendGroup.findMany({
+      where: { id: { in: groupIds } },
+      select: { id: true, isAnnouncement: true, club: { select: { id: true, name: true } } },
+    });
+    const byId = new Map(groups.map((g) => [g.id, g]));
+
+    return conversations.map((c) => {
+      const g =
+        c.type === ConversationType.GROUP && c.relatedEntityId
+          ? byId.get(c.relatedEntityId)
+          : undefined;
+      return { ...c, club: g?.club ?? null, isAnnouncement: g?.isAnnouncement ?? false };
+    });
   }
 }

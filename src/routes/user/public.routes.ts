@@ -176,6 +176,25 @@ router.get(
       }
     }
 
+    // Follow relationship — separate from friendship above (one-directional,
+    // no approval needed). followerId/followingId are queried directly
+    // rather than via the User.followers/following relation fields, whose
+    // names are swapped relative to what they actually hold.
+    const [followerCount, followingCount, isFollowing] = await Promise.all([
+      prisma.follow.count({ where: { followingId: id } }),
+      prisma.follow.count({ where: { followerId: id } }),
+      currentUserId && !isOwnProfile
+        ? prisma.follow
+            .findUnique({
+              where: {
+                followerId_followingId: { followerId: currentUserId, followingId: id },
+              },
+              select: { id: true },
+            })
+            .then((f) => !!f)
+        : Promise.resolve(false),
+    ]);
+
     // Build response with privacy-aware data
     const publicProfile = {
       id: user.id,
@@ -192,6 +211,9 @@ router.get(
       joinedAt: user.createdAt.toISOString(),
       isOwnProfile,
       friendshipStatus,
+      followerCount,
+      followingCount,
+      isFollowing,
       stats: user.preferences?.showStats
         ? {
             totalRides: user.rideStats?.totalRides || 0,

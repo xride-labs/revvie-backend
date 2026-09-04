@@ -39,6 +39,10 @@ import {
   pinMessage,
   votePoll,
   suspendParticipant,
+  deleteConversation,
+  listMessageRequests,
+  acceptMessageRequest,
+  ignoreMessageRequest,
 } from "../../controllers/chat.controller.js";
 
 const router = Router();
@@ -61,6 +65,76 @@ router.use(requireAuth);
  *         description: Unread counts per conversation and total badge count
  */
 router.get("/unread", asyncHandler(getUnreadCounts));
+
+// ─── Message Requests ────────────────────────────────────────────────────────
+
+/**
+ * @swagger
+ * /api/chat/requests:
+ *   get:
+ *     summary: List pending DM requests where you're the receiver
+ *     tags: [Chat]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Pending message requests
+ */
+router.get("/requests", asyncHandler(listMessageRequests));
+
+/**
+ * @swagger
+ * /api/chat/conversations/{id}/accept:
+ *   post:
+ *     summary: Accept a pending message request
+ *     tags: [Chat]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *     responses:
+ *       200:
+ *         description: Request accepted
+ *       404:
+ *         description: No pending request found
+ */
+router.post(
+  "/conversations/:id/accept",
+  validateParams(conversationIdParamSchema),
+  requireConversationAccess,
+  asyncHandler(acceptMessageRequest),
+);
+
+/**
+ * @swagger
+ * /api/chat/conversations/{id}/ignore:
+ *   post:
+ *     summary: Ignore a pending message request
+ *     tags: [Chat]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *     responses:
+ *       200:
+ *         description: Request ignored
+ *       404:
+ *         description: No pending request found
+ */
+router.post(
+  "/conversations/:id/ignore",
+  validateParams(conversationIdParamSchema),
+  requireConversationAccess,
+  asyncHandler(ignoreMessageRequest),
+);
 
 // ─── Conversations ───────────────────────────────────────────────────────────
 
@@ -240,6 +314,31 @@ router.post(
   requireConversationAccess,
   validateBody(muteConversationSchema),
   asyncHandler(muteConversation),
+);
+
+/**
+ * @swagger
+ * /api/chat/conversations/{id}:
+ *   delete:
+ *     summary: Delete a conversation from your own inbox (leaves it intact for other participants)
+ *     tags: [Chat]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *     responses:
+ *       200:
+ *         description: Conversation deleted
+ */
+router.delete(
+  "/conversations/:id",
+  validateParams(conversationIdParamSchema),
+  requireConversationAccess,
+  asyncHandler(deleteConversation),
 );
 
 // ─── Disappearing-message policy ─────────────────────────────────────────────

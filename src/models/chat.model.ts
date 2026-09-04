@@ -58,6 +58,19 @@ export enum ParticipantRole {
   OWNER = "owner",
 }
 
+/**
+ * Whether a DIRECT conversation is a fully-open chat or a message request
+ * waiting on the receiver. Only ever set on DIRECT conversations created
+ * between non-friends; every other conversation (group/club, or a DIRECT
+ * conversation between existing friends) defaults straight to ACCEPTED and
+ * never surfaces in the requests inbox.
+ */
+export enum RequestStatus {
+  ACCEPTED = "accepted",
+  PENDING = "pending",
+  IGNORED = "ignored",
+}
+
 // ─── Interfaces ──────────────────────────────────────────────────────────────
 
 export interface IParticipant {
@@ -67,6 +80,10 @@ export interface IParticipant {
   nickname?: string;
   isMuted: boolean;
   suspendedUntil?: Date;
+  // Per-participant, not global — deleting a conversation only hides it
+  // from your own inbox, unlike `Conversation.isActive` (used to deactivate
+  // a chat for every participant, e.g. when its club group is deleted).
+  isHidden: boolean;
 }
 
 export interface ILastMessage {
@@ -93,6 +110,10 @@ export interface IConversation extends Document {
   lastMessage?: ILastMessage;
   isActive: boolean;
   createdBy: string;
+  // Message-request gating — see RequestStatus. Absent/ACCEPTED on every
+  // conversation except a pending DM request from a non-friend.
+  requestStatus: RequestStatus;
+  requestedBy?: string;
   // Phase 5 retention — controls how long messages in this conversation live.
   // `disappearingPolicy` is user-controlled; `retentionMaxDays` is a hard cap
   // (default 30) that the server clamps the policy to.
@@ -197,6 +218,7 @@ const ParticipantSchema = new Schema<IParticipant>(
     nickname: { type: String },
     isMuted: { type: Boolean, default: false },
     suspendedUntil: { type: Date, default: null },
+    isHidden: { type: Boolean, default: false },
   },
   { _id: false },
 );
@@ -246,6 +268,12 @@ const ConversationSchema = new Schema<IConversation>(
     lastMessage: { type: LastMessageSchema, default: null },
     isActive: { type: Boolean, default: true },
     createdBy: { type: String, required: true },
+    requestStatus: {
+      type: String,
+      enum: Object.values(RequestStatus),
+      default: RequestStatus.ACCEPTED,
+    },
+    requestedBy: { type: String, default: null },
     disappearingPolicy: {
       type: String,
       enum: Object.values(DisappearingPolicy),

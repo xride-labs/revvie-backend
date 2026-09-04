@@ -3,7 +3,7 @@
  * Tests for event discovery, hosting, and attendance.
  *
  * Routes (all behind requireAuth):
- *   GET  /api/events                 -> ApiResponse.success(events[], ...)
+ *   GET  /api/events                 -> ApiResponse.success({ events[], total, page, totalPages, hasMore }, ...)
  *   POST /api/events                 -> ApiResponse.created(event, ...) | 403 (club gating)
  *   POST /api/events/:id/attend      -> ApiResponse.success(participation, ...) | 404
  */
@@ -56,9 +56,9 @@ describe("Event Routes", () => {
 
       expect(res.status).toBe(200);
       expect(res.body.success).toBe(true);
-      // ApiResponse.success(events) — data is the array directly.
-      expect(Array.isArray(res.body.data)).toBe(true);
-      const served = res.body.data.find((e: any) => e.id === event.id);
+      // ApiResponse.success({ events, total, page, totalPages, hasMore }, ...)
+      expect(Array.isArray(res.body.data.events)).toBe(true);
+      const served = res.body.data.events.find((e: any) => e.id === event.id);
       expect(served).toBeTruthy();
       expect(served.title).toBe("Sunday Ride Meetup");
       expect(served._count).toHaveProperty("participants");
@@ -77,7 +77,7 @@ describe("Event Routes", () => {
         .set("Authorization", `Bearer ${token}`);
 
       expect(res.status).toBe(200);
-      const ids = res.body.data.map((e: any) => e.id);
+      const ids = res.body.data.events.map((e: any) => e.id);
       expect(ids).not.toContain(past.id);
       expect(ids).not.toContain(cancelled.id);
     });
@@ -92,7 +92,7 @@ describe("Event Routes", () => {
         .set("Authorization", `Bearer ${token}`);
 
       expect(res.status).toBe(200);
-      const ids = res.body.data.map((e: any) => e.id);
+      const ids = res.body.data.events.map((e: any) => e.id);
       expect(ids).toContain(featured.id);
       expect(ids).not.toContain(normal.id);
     });

@@ -32,6 +32,10 @@ export class ChatService {
   static muteConversation = ConversationService.muteConversation.bind(ConversationService);
   static setDisappearingPolicy = ConversationService.setDisappearingPolicy.bind(ConversationService);
   static archiveConversation = ConversationService.archiveConversation.bind(ConversationService);
+  static hideConversationForUser = ConversationService.hideForParticipant.bind(ConversationService);
+  static listMessageRequests = ConversationService.listMessageRequests.bind(ConversationService);
+  static respondToMessageRequest = ConversationService.respondToMessageRequest.bind(ConversationService);
+  static enrichWithClubInfo = ConversationService.enrichWithClubInfo.bind(ConversationService);
 
   // ─── Messages ───────────────────────────────────────────────────────────────
 

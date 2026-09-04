@@ -720,6 +720,69 @@ export class UserController {
   
   }
 
+  static async postByIdFollow(req: Request, res: Response) {
+
+    const session = (req as any).session;
+    const followerId = session.user.id;
+    const { id: followingId } = req.params;
+
+    if (followerId === followingId) {
+      return ApiResponse.error(
+        res,
+        "You cannot follow yourself",
+        400,
+        ErrorCode.VALIDATION_ERROR,
+      );
+    }
+
+    const target = await prisma.user.findUnique({
+      where: { id: followingId },
+      select: { id: true },
+    });
+    if (!target) {
+      return ApiResponse.notFound(res, "User not found", ErrorCode.USER_NOT_FOUND);
+    }
+
+    await prisma.follow.upsert({
+      where: { followerId_followingId: { followerId, followingId } },
+      create: { followerId, followingId },
+      update: {},
+    });
+
+    const [followerCount, followingCount] = await Promise.all([
+      prisma.follow.count({ where: { followingId } }),
+      prisma.follow.count({ where: { followerId } }),
+    ]);
+
+    ApiResponse.success(
+      res,
+      { isFollowing: true, followerCount, followingCount },
+      "Followed successfully",
+    );
+
+  }
+
+  static async postByIdUnfollow(req: Request, res: Response) {
+
+    const session = (req as any).session;
+    const followerId = session.user.id;
+    const { id: followingId } = req.params;
+
+    await prisma.follow.deleteMany({ where: { followerId, followingId } });
+
+    const [followerCount, followingCount] = await Promise.all([
+      prisma.follow.count({ where: { followingId } }),
+      prisma.follow.count({ where: { followerId } }),
+    ]);
+
+    ApiResponse.success(
+      res,
+      { isFollowing: false, followerCount, followingCount },
+      "Unfollowed successfully",
+    );
+
+  }
+
   static async patchMeGhostMode(req: Request, res: Response) {
 
     const session = (req as any).session;

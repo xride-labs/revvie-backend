@@ -22,6 +22,7 @@ import { rideToGpx } from "../lib/gpx.js";
 import { awardBadgeByTitle, awardXp } from "../lib/xp.js";
 import { isStaff } from "../lib/utils/permissions.js";
 import { RideService } from "../services/ride/ride.service.js";
+import { isUserPro, countUserRidesThisMonth, FREE_RIDES_PER_MONTH_LIMIT, FREE_RIDERS_PER_RIDE_LIMIT } from "../lib/subscription.js";
 
 export class RideController {
   /**
@@ -112,6 +113,19 @@ export class RideController {
   static async getMine(req: Request, res: Response) {
 
     const session = (req as any).session;
+
+    const hasPro = await isUserPro(session.user.id);
+    if (!hasPro) {
+      const ridesThisMonth = await countUserRidesThisMonth(session.user.id);
+      if (ridesThisMonth >= FREE_RIDES_PER_MONTH_LIMIT) {
+        return ApiResponse.forbidden(
+          res,
+          `Free users can create up to ${FREE_RIDES_PER_MONTH_LIMIT} rides per month. Upgrade to Revvie Pro for unlimited rides.`,
+          ErrorCode.SUBSCRIPTION_REQUIRED,
+        );
+      }
+    }
+
     const {
       title,
       description,
@@ -151,6 +165,19 @@ export class RideController {
           ? JSON.stringify(routeData)
           : undefined;
 
+    // A ride created against a club's FriendGroup (e.g. the club screen's
+    // "Plan a Ride" flow) must inherit that group's clubId — otherwise the
+    // ride is invisible to GET /clubs/:id/rides and never counts toward the
+    // club's ride stats/upcoming-ride card even though it was planned there.
+    let resolvedClubId: string | undefined;
+    if (friendGroupId) {
+      const group = await prisma.friendGroup.findUnique({
+        where: { id: friendGroupId },
+        select: { clubId: true },
+      });
+      resolvedClubId = group?.clubId ?? undefined;
+    }
+
     const ride = await prisma.ride.create({
       data: {
         title,
@@ -176,6 +203,7 @@ export class RideController {
         waypoints: waypoints ?? undefined,
         routeData: serializedRouteData,
         friendGroupId: friendGroupId ?? undefined,
+        clubId: resolvedClubId,
         privacyLevel: privacyLevel ?? undefined,
       },
       include: {
@@ -333,6 +361,26 @@ export class RideController {
         res,
         "You have already requested to join this ride",
       );
+    }
+
+    // Capacity, not a paywall: the ride's CREATOR is who'd need Pro to lift
+    // this, not the person requesting to join, so a full free-tier ride
+    // reads as an ordinary "ride is full" error rather than
+    // SUBSCRIPTION_REQUIRED (which would send the wrong person to a
+    // paywall they can't act on).
+    const creatorIsPro = await isUserPro(ride.creatorId);
+    if (!creatorIsPro) {
+      const activeParticipants = await prisma.rideParticipant.count({
+        where: { rideId: id, status: { in: ["REQUESTED", "ACCEPTED"] } },
+      });
+      if (activeParticipants >= FREE_RIDERS_PER_RIDE_LIMIT) {
+        return ApiResponse.error(
+          res,
+          `This ride is full (max ${FREE_RIDERS_PER_RIDE_LIMIT} riders on a free-tier ride).`,
+          400,
+          ErrorCode.INVALID_INPUT,
+        );
+      }
     }
 
     const participant = await prisma.rideParticipant.create({

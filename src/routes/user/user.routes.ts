@@ -463,6 +463,64 @@ router.get(
   asyncHandler(UserController.getByIdClubs)
 );
 
+/**
+ * @swagger
+ * /api/users/{id}/follow:
+ *   post:
+ *     summary: Follow a user
+ *     tags: [Users]
+ *     security:
+ *       - cookieAuth: []
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *     responses:
+ *       200:
+ *         description: Followed successfully
+ *       400:
+ *         description: Cannot follow yourself
+ *       401:
+ *         $ref: '#/components/responses/Unauthorized'
+ *       404:
+ *         $ref: '#/components/responses/NotFound'
+ */
+router.post(
+  "/:id/follow",
+  validateParams(idParamSchema),
+  asyncHandler(UserController.postByIdFollow)
+);
+
+/**
+ * @swagger
+ * /api/users/{id}/unfollow:
+ *   post:
+ *     summary: Unfollow a user
+ *     tags: [Users]
+ *     security:
+ *       - cookieAuth: []
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *     responses:
+ *       200:
+ *         description: Unfollowed successfully
+ *       401:
+ *         $ref: '#/components/responses/Unauthorized'
+ */
+router.post(
+  "/:id/unfollow",
+  validateParams(idParamSchema),
+  asyncHandler(UserController.postByIdUnfollow)
+);
+
 // ========================================
 // Bike Management (Current User)
 // ========================================

@@ -199,15 +199,18 @@ describe("Clubs Routes - Comprehensive Tests", () => {
       expect(res.status).toBe(401);
     });
 
-    it("should block a non-pro user from creating a second owned club", async () => {
-      // A free user can own exactly one club; the second create is 403.
+    it("should block a non-pro user from creating a club past the free ownership limit", async () => {
+      // FREE_CLUB_OWNERSHIP_LIMIT (subscription.ts) = 3 — a free user can own
+      // that many; the next create is 403.
       const { user, token } = await createTestUser();
-      await createTestClub({ ownerId: user.id });
+      for (let i = 0; i < 3; i++) {
+        await createTestClub({ ownerId: user.id });
+      }
 
       const res = await request(app)
         .post("/api/clubs")
         .set("Authorization", `Bearer ${token}`)
-        .send({ name: "Second Club Attempt" });
+        .send({ name: "One Club Too Many" });
 
       expect(res.status).toBe(403);
       expect(res.body.error.code).toBe("SUBSCRIPTION_REQUIRED");

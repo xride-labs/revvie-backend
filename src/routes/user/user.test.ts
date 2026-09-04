@@ -1055,16 +1055,8 @@ describe("User Routes", () => {
     });
   });
 
-  // ───────────────────────────────────────────────────────────────────────────
-  // NOT MOUNTED / NOT PRESENT — kept skipped on purpose.
-  //
-  // There is no follow / unfollow / friend-request endpoint under /api/users
-  // (friendship lives at /api/friends). The GET /:id/public handler in
-  // src/routes/user/public.routes.ts is not wired into any router in
-  // server.ts, so it is unreachable from the app and cannot be tested here.
-  // ───────────────────────────────────────────────────────────────────────────
   describe("POST /api/users/:id/follow", () => {
-    it.skip("should follow a user successfully", async () => {
+    it("should follow a user successfully", async () => {
       const user1 = await createTestUser();
       const { token } = await createTestUser();
 
@@ -1075,7 +1067,7 @@ describe("User Routes", () => {
       expect(res.status).toBe(200);
     });
 
-    it.skip("should not allow following self", async () => {
+    it("should not allow following self", async () => {
       const { user, token } = await createTestUser();
 
       const res = await request(app)
@@ -1087,7 +1079,7 @@ describe("User Routes", () => {
   });
 
   describe("POST /api/users/:id/unfollow", () => {
-    it.skip("should unfollow a user successfully", async () => {
+    it("should unfollow a user successfully", async () => {
       const user1 = await createTestUser();
       const user2 = await createTestUser();
 
@@ -1103,6 +1095,11 @@ describe("User Routes", () => {
     });
   });
 
+  // ───────────────────────────────────────────────────────────────────────────
+  // NOT MOUNTED / NOT PRESENT — kept skipped on purpose.
+  // There is no friend-request endpoint under /api/users (friendship lives
+  // at /api/friends).
+  // ───────────────────────────────────────────────────────────────────────────
   describe("POST /api/users/:id/friend-request", () => {
     it.skip("should send friend request successfully", async () => {
       const user1 = await createTestUser();

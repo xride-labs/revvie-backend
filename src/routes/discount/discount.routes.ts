@@ -14,6 +14,11 @@ router.use(requireAuth);
 
 const listDiscountsQuerySchema = z.object({
   featured: z.coerce.boolean().optional(),
+  // Restricts the aggregate feed to one business — lets the public business
+  // profile page (app/business/[id]/index.tsx) reuse this endpoint instead
+  // of the owner-gated /business/:id/discounts route, which 403s for
+  // non-owner visitors.
+  businessId: z.string().optional(),
   page: z.coerce.number().int().min(1).default(1),
   limit: z.coerce.number().int().min(1).max(50).default(20),
 });
@@ -23,7 +28,8 @@ const listDiscountsQuerySchema = z.object({
  *
  * Active discounts whose validity window includes now. Featured first
  * (sorted desc by validUntil so freshly-launched promos surface). The
- * `featured=true` query restricts to featured items only.
+ * `featured=true` query restricts to featured items only; `businessId`
+ * restricts to a single business's discounts.
  *
  * Discounts are visible to all users (Pro and Free) — they're not ads.
  */
@@ -31,8 +37,9 @@ router.get(
   "/",
   validateQuery(listDiscountsQuerySchema),
   asyncHandler(async (req: Request, res: Response) => {
-    const { featured, page, limit } = req.query as unknown as {
+    const { featured, businessId, page, limit } = req.query as unknown as {
       featured?: boolean;
+      businessId?: string;
       page: number;
       limit: number;
     };
@@ -46,6 +53,7 @@ router.get(
       business: { verification: "APPROVED" },
     };
     if (featured) where.isFeatured = true;
+    if (businessId) where.businessId = businessId;
 
     const [items, total] = await Promise.all([
       prisma.discount.findMany({

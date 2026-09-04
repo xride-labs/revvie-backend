@@ -3,7 +3,10 @@ import prisma from "./prisma.js";
 import { ApiResponse, ErrorCode } from "./utils/apiResponse.js";
 
 export const FREE_MARKETPLACE_LISTING_LIMIT = 3;
-export const FREE_CLUB_OWNERSHIP_LIMIT = 5;
+export const FREE_CLUB_OWNERSHIP_LIMIT = 3;
+export const FREE_RIDES_PER_MONTH_LIMIT = 12;
+export const FREE_CLUBS_JOINED_LIMIT = 5;
+export const FREE_RIDERS_PER_RIDE_LIMIT = 12;
 
 const ACTIVE_SUBSCRIPTION_STATUSES = ["active", "trialing", "renewed"];
 
@@ -238,6 +241,24 @@ export async function countUserActiveListings(userId: string): Promise<number> {
       sellerId: userId,
       status: "ACTIVE",
     },
+  });
+}
+
+/** Clubs the user has JOINED (not counting ones they own/founded) — a
+ * separate free-tier lever from FREE_CLUB_OWNERSHIP_LIMIT. */
+export async function countUserJoinedClubs(userId: string): Promise<number> {
+  return prisma.clubMember.count({
+    where: { userId, role: { not: "FOUNDER" } },
+  });
+}
+
+/** Rides created since the 1st of the current calendar month. */
+export async function countUserRidesThisMonth(userId: string): Promise<number> {
+  const startOfMonth = new Date();
+  startOfMonth.setDate(1);
+  startOfMonth.setHours(0, 0, 0, 0);
+  return prisma.ride.count({
+    where: { creatorId: userId, createdAt: { gte: startOfMonth } },
   });
 }
 

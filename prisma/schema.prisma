@@ -109,6 +109,9 @@ model User {
   clubMemberships     ClubMember[]
   clubJoinRequests    ClubJoinRequest[]
   marketplaceListings MarketplaceListing[] @relation("SellerListings")
+  wishlist            Wishlist[]
+  recentlyViewed      RecentlyViewedListing[]
+  savedSearches       SavedSearch[]
   chatMessages        ChatMessage[]
   posts               Post[]
   likes               Like[]
@@ -601,7 +604,7 @@ enum RideStatus {
   CANCELLED
 }
 
-// Per-ride privacy level. PUBLIC mirrors today's behaviour (feed-visible,
+// Per-ride privacy level. PUBLIC mirrors today's behavior (feed-visible,
 // discoverable). FRIENDS_ONLY hides from the public feed but keeps live
 // location flowing inside the ride. INCOGNITO suppresses feed posts and
 // non-participant live-broadcasts entirely — emergency-contact + active
@@ -738,7 +741,7 @@ model Ride {
   // Pause/resume tracking — set when an active ride is paused, cleared on resume.
   pausedAt DateTime? @map("paused_at")
 
-  // Per-ride privacy override. PUBLIC mirrors current behaviour; FRIENDS_ONLY
+  // Per-ride privacy override. PUBLIC mirrors current behavior; FRIENDS_ONLY
   // hides from the feed but keeps live-location sharing inside the ride;
   // INCOGNITO suppresses feed posts, live-broadcasts, and post-ride summary
   // visibility for non-participants. Defaults to PUBLIC for backward-compat.
@@ -925,6 +928,7 @@ enum ListingStatus {
   ACTIVE
   SOLD
   INACTIVE
+  DRAFT
 }
 
 model MarketplaceListing {
@@ -968,9 +972,17 @@ model MarketplaceListing {
   // Reviews relation
   reviews Review[]
 
+  // Denormalized from `reviews` — recomputed by POST /:id/reviews on every
+  // new review so list-page cards can show a rating without an extra join,
+  // and so "sort by rating" is a plain column sort.
+  avgRating   Float @default(0) @map("avg_rating")
+  reviewCount Int   @default(0) @map("review_count")
+
   // Offers and interests (FB Marketplace-style negotiation)
-  offers    ListingOffer[]    @relation("ListingOffers")
+  offers    ListingOffer[] @relation("ListingOffers")
   interests ListingInterest[] @relation("ListingInterests")
+  wishlistedBy Wishlist[]
+  viewedBy     RecentlyViewedListing[]
 
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
@@ -979,7 +991,63 @@ model MarketplaceListing {
   @@index([status, createdAt], map: "listings_status_created_idx")
   @@index([featured, featuredUntil], map: "marketplace_featured_idx")
   @@index([clubId, status], map: "listings_club_idx")
+  @@index([avgRating], map: "listings_rating_idx")
   @@map("marketplace_listings")
+}
+
+// A user "hearting" a listing to save it for later — distinct from
+// ListingInterest (a seller-facing "someone's interested" signal used by the
+// offer-negotiation flow); this one is a personal, user-facing saved list.
+model Wishlist {
+  id        String   @id @default(cuid())
+  userId    String   @map("user_id")
+  listingId String   @map("listing_id")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  user    User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  listing MarketplaceListing @relation(fields: [listingId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, listingId])
+  @@index([userId, createdAt], map: "wishlist_user_idx")
+  @@map("wishlists")
+}
+
+// A view is recorded (upserted) each time a user opens a listing detail
+// page — one row per (user, listing), timestamp bumped on repeat views, so
+// "Recently Viewed" reflects last-seen order rather than a full view log.
+model RecentlyViewedListing {
+  id        String   @id @default(cuid())
+  userId    String   @map("user_id")
+  listingId String   @map("listing_id")
+  viewedAt  DateTime @default(now()) @map("viewed_at")
+
+  user    User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  listing MarketplaceListing @relation(fields: [listingId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, listingId])
+  @@index([userId, viewedAt], map: "recently_viewed_user_idx")
+  @@map("recently_viewed_listings")
+}
+
+// A bookmarked marketplace search/filter combination. No alerting/push
+// infrastructure — this is the filter bookmark itself, re-run on demand from
+// the Saved screen's "Searches" tab.
+model SavedSearch {
+  id          String   @id @default(cuid())
+  userId      String   @map("user_id")
+  label       String
+  category    String?
+  subcategory String?
+  search      String?
+  minPrice    Float?   @map("min_price")
+  maxPrice    Float?   @map("max_price")
+  condition   String?
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt], map: "saved_search_user_idx")
+  @@map("saved_searches")
 }
 
 model ChatMessage {
@@ -1232,6 +1300,8 @@ model Bike {
   ownerSince   DateTime? @map("owner_since")
   isPrimary    Boolean   @default(false) @map("is_primary")
   image        String? // Bike image URL
+  nickname     String?   @map("nickname")
+  images       String[]  @default([]) @map("images")
 
   // Modifications stored as JSON
   modifications Json? // { exhaust, tyres, lights, phoneMount, etc. }

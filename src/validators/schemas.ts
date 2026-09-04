@@ -141,6 +141,8 @@ export const createBikeSchema = z.object({
   isPrimary: z.boolean().optional(),
   image: z.string().url().optional(),
   modifications: z.any().optional(),
+  nickname: z.string().max(60).optional(),
+  bikeModelId: z.string().optional(),
 });
 
 export const updateBikeSchema = createBikeSchema.partial();
@@ -302,6 +304,10 @@ export const createListingSchema = z.object({
   subcategory: z.string().max(100).optional(),
   specifications: z.string().max(2000).optional(), // JSON string
   condition: z.enum(["New", "Like New", "Good", "Fair", "Poor"]).optional(),
+  // DRAFT is only settable at creation, to save wizard progress before
+  // publishing. Not "ACTIVE"/"SOLD"/"INACTIVE" — those are lifecycle states
+  // reachable only from PATCH (see updateListingSchema).
+  status: z.enum(["ACTIVE", "DRAFT"]).optional(),
   locationLabel: z.string().max(200).optional(),
   allowBids: z.boolean().optional(),
   latitude: z.number().min(-90).max(90).optional(),
@@ -315,19 +321,34 @@ export const createListingSchema = z.object({
 });
 
 export const updateListingSchema = createListingSchema.partial().extend({
-  status: z.enum(["ACTIVE", "SOLD", "INACTIVE"]).optional(),
+  status: z.enum(["ACTIVE", "SOLD", "INACTIVE", "DRAFT"]).optional(),
 });
 
-export const listingQuerySchema = paginationSchema.extend({
-  category: z.string().optional(),
-  minPrice: z.coerce.number().positive().optional(),
-  maxPrice: z.coerce.number().positive().optional(),
-  condition: z.string().optional(),
-  status: z.enum(["ACTIVE", "SOLD", "INACTIVE"]).optional(),
-  search: z.string().optional(),
-  featured: z.enum(["true", "false"]).optional(),
-  sellerId: z.string().optional(),
-});
+export const listingQuerySchema = paginationSchema
+  .extend({
+    category: z.string().optional(),
+    subcategory: z.string().optional(),
+    minPrice: z.coerce.number().positive().optional(),
+    maxPrice: z.coerce.number().positive().optional(),
+    condition: z.string().optional(),
+    status: z.enum(["ACTIVE", "SOLD", "INACTIVE"]).optional(),
+    search: z.string().optional(),
+    featured: z.enum(["true", "false"]).optional(),
+    sellerId: z.string().optional(),
+    sort: z
+      .enum(["newest", "price_asc", "price_desc", "rating", "trending"])
+      .optional()
+      .default("newest"),
+    // Opt-in geo filtering: unlike the discovery feed's mandatory lat/lng,
+    // marketplace listings are still browsable without a location.
+    lat: z.coerce.number().min(-90).max(90).optional(),
+    lng: z.coerce.number().min(-180).max(180).optional(),
+    radiusKm: z.coerce.number().positive().max(500).optional().default(25),
+  })
+  .refine((q) => (q.lat === undefined) === (q.lng === undefined), {
+    message: "lat and lng must be provided together",
+    path: ["lat"],
+  });
 
 export const createReviewSchema = z.object({
   rating: z
@@ -607,9 +628,19 @@ export const updatePreferencesSchema = z
   });
 
 export const myListingsQuerySchema = paginationSchema.extend({
-  status: z.enum(["ACTIVE", "SOLD", "INACTIVE"]).optional(),
+  status: z.enum(["ACTIVE", "SOLD", "INACTIVE", "DRAFT"]).optional(),
   category: z.string().optional(),
   search: z.string().optional(),
+});
+
+export const createSavedSearchSchema = z.object({
+  label: z.string().min(1).max(100),
+  category: z.string().optional(),
+  subcategory: z.string().optional(),
+  search: z.string().optional(),
+  minPrice: z.number().positive().optional(),
+  maxPrice: z.number().positive().optional(),
+  condition: z.string().optional(),
 });
 
 export const feedQuerySchema = paginationSchema.extend({
