@@ -70,6 +70,14 @@ export const auth = betterAuth({
     provider: "postgresql",
   }),
 
+  // Any OAuth callback failure (e.g. an unlinked/mismatched Google account)
+  // that isn't given an explicit `errorCallbackURL` by the client falls back
+  // to here. Without this, Better Auth's own default sends the visitor to
+  // `${baseURL}/error` — a page on the API origin the web app never serves.
+  onAPIError: {
+    errorURL: `${process.env.FRONTEND_URL || "http://localhost:3000"}/login`,
+  },
+
   // Base path for auth endpoints
   basePath: "/api/auth",
 
