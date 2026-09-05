@@ -108,6 +108,131 @@ describe("Public Routes", () => {
   });
 
   // ───────────────────────────────────────────────────────────────────────────
+  // GET /api/public/marketplace
+  // ───────────────────────────────────────────────────────────────────────────
+  describe("GET /api/public/marketplace", () => {
+    it("should return a curated preview list WITHOUT an auth header", async () => {
+      const { user } = await createTestUser();
+      const listing = await createTestListing(user.id, {
+        title: "Used Helmet",
+        price: 150,
+        currency: "INR",
+        condition: "Good",
+        category: "Gear",
+        images: ["https://cdn.example.com/helmet.jpg"],
+      });
+
+      const res = await request(app).get("/api/public/marketplace");
+
+      expect(res.status).toBe(200);
+      expect(res.body.success).toBe(true);
+      expect(res.body.data.listings).toContainEqual({
+        id: listing.id,
+        title: "Used Helmet",
+        price: 150,
+        currency: "INR",
+        condition: "Good",
+        image: "https://cdn.example.com/helmet.jpg",
+        category: "Gear",
+        featured: false,
+        seller: { id: user.id, name: user.name, avatar: user.avatar ?? null },
+        club: null,
+        rating: null,
+        ratingCount: 0,
+      });
+    });
+
+    it("should not leak sellerId/coords/description", async () => {
+      const { user } = await createTestUser();
+      await createTestListing(user.id);
+
+      const res = await request(app).get("/api/public/marketplace");
+
+      expect(res.status).toBe(200);
+      const keys = Object.keys(res.body.data.listings[0]).sort();
+      expect(keys).toEqual(
+        [
+          "category",
+          "club",
+          "condition",
+          "currency",
+          "featured",
+          "id",
+          "image",
+          "price",
+          "rating",
+          "ratingCount",
+          "seller",
+          "title",
+        ].sort(),
+      );
+      expect(res.body.data.listings[0]).not.toHaveProperty("sellerId");
+      expect(res.body.data.listings[0]).not.toHaveProperty("description");
+      expect(res.body.data.listings[0]).not.toHaveProperty("latitude");
+      expect(res.body.data.listings[0]).not.toHaveProperty("longitude");
+    });
+
+    it("should exclude CLUB_ONLY listings", async () => {
+      const { user } = await createTestUser();
+      const club = await createTestClub(user.id);
+      await createTestListing(user.id, {
+        title: "Club-only Item",
+        clubId: club.id,
+        visibility: "CLUB_ONLY",
+      });
+
+      const res = await request(app).get("/api/public/marketplace");
+
+      expect(res.status).toBe(200);
+      expect(
+        res.body.data.listings.some((l: any) => l.title === "Club-only Item"),
+      ).toBe(false);
+    });
+
+    it("should exclude non-ACTIVE listings", async () => {
+      const { user } = await createTestUser();
+      await createTestListing(user.id, {
+        title: "Sold Item",
+        status: "SOLD",
+      });
+
+      const res = await request(app).get("/api/public/marketplace");
+
+      expect(res.status).toBe(200);
+      expect(res.body.data.listings.some((l: any) => l.title === "Sold Item")).toBe(
+        false,
+      );
+    });
+
+    it("should sort featured listings first", async () => {
+      const { user } = await createTestUser();
+      await createTestListing(user.id, { title: "Regular Item", featured: false });
+      await createTestListing(user.id, { title: "Boosted Item", featured: true });
+
+      const res = await request(app).get("/api/public/marketplace");
+
+      expect(res.status).toBe(200);
+      expect(res.body.data.listings[0].title).toBe("Boosted Item");
+    });
+
+    it("should surface avgRating/reviewCount as rating/ratingCount", async () => {
+      const { user } = await createTestUser();
+      const listing = await createTestListing(user.id, {
+        title: "Rated Item",
+        avgRating: 4.5,
+        reviewCount: 3,
+      });
+
+      const res = await request(app).get("/api/public/marketplace");
+
+      expect(res.status).toBe(200);
+      const found = res.body.data.listings.find((l: any) => l.id === listing.id);
+      expect(found.rating).toBe(4.5);
+      expect(found.ratingCount).toBe(3);
+    });
+  });
+
+  // ───────────────────────────────────────────────────────────────────────────
   // GET /api/public/marketplace/:id
   // ───────────────────────────────────────────────────────────────────────────
   describe("GET /api/public/marketplace/:id", () => {

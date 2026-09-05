@@ -45,6 +45,56 @@ router.get(
   }),
 );
 
+/** Small, fixed-size preview for the marketing landing page — not paginated. */
+const PUBLIC_MARKETPLACE_PREVIEW_LIMIT = 8;
+
+/**
+ * GET /api/public/marketplace
+ * Unauthenticated marketplace preview for the marketing site's landing page.
+ * Mirrors the visibility rules of the authenticated `GET /marketplace` list
+ * (active, non club-only listings, featured first) but returns a small fixed
+ * page with a curated field set — no pagination params, no internal filters.
+ */
+router.get(
+  "/marketplace",
+  requireMarketplaceEnabled,
+  asyncHandler(async (_req: Request, res: Response) => {
+    const listings = await prisma.marketplaceListing.findMany({
+      where: {
+        status: "ACTIVE",
+        visibility: { not: "CLUB_ONLY" },
+      },
+      orderBy: [{ featured: "desc" }, { createdAt: "desc" }],
+      take: PUBLIC_MARKETPLACE_PREVIEW_LIMIT,
+      include: {
+        seller: { select: { id: true, name: true, avatar: true } },
+        club: { select: { id: true, name: true } },
+      },
+    });
+
+    return ApiResponse.success(res, {
+      listings: listings.map((listing) => ({
+        id: listing.id,
+        title: listing.title,
+        price: listing.price,
+        currency: listing.currency,
+        condition: listing.condition ?? null,
+        image: listing.images[0] ?? null,
+        category: listing.category ?? null,
+        featured: listing.featured,
+        seller: {
+          id: listing.seller.id,
+          name: listing.seller.name,
+          avatar: listing.seller.avatar ?? null,
+        },
+        club: listing.club ? { id: listing.club.id, name: listing.club.name } : null,
+        rating: listing.reviewCount > 0 ? listing.avgRating : null,
+        ratingCount: listing.reviewCount,
+      })),
+    });
+  }),
+);
+
 /**
  * GET /api/public/marketplace/:id
  * Unauthenticated listing preview for web share pages.
