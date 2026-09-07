@@ -10,9 +10,16 @@ import {
   updateProfileSchema,
   updatePreferencesSchema,
   verifyEmailSchema,
+  sendOtpSchema,
+  verifyOtpSchema,
 } from "../../validators/schemas.js";
 import { z } from "zod";
+import crypto from "crypto";
 import { invalidatePushPrefCache } from "../../lib/notifications.js";
+import {
+  initiatePhoneVerification,
+  validatePhoneOtp,
+} from "../../lib/phoneVerification.js";
 
 const router = Router();
 
@@ -205,6 +212,158 @@ router.post(
     ApiResponse.success(res, null, "Email verified successfully");
   }),
 );
+
+/**
+ * @swagger
+ * /api/account/phone/send-otp:
+ *   post:
+ *     summary: Send OTP to phone number via APITxT
+ *     tags: [Auth]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [phone]
+ *             properties:
+ *               phone:
+ *                 type: string
+ *                 example: "+919876543210"
+ *     responses:
+ *       200:
+ *         description: OTP sent successfully
+ *       400:
+ *         description: Invalid phone number or cooldown in effect
+ */
+router.post(
+  "/phone/send-otp",
+  requireAuth,
+  validateBody(sendOtpSchema),
+  asyncHandler(async (req: Request, res: Response) => {
+    const { phone } = req.body;
+    try {
+      const result = await initiatePhoneVerification(phone);
+      ApiResponse.success(
+        res,
+        {
+          expiresAt: result.expiresAt,
+          phone: result.normalizedPhone,
+        },
+        result.message,
+      );
+    } catch (error: any) {
+      return ApiResponse.error(
+        res,
+        error.message || "Failed to send verification code",
+        400,
+        ErrorCode.INVALID_INPUT,
+      );
+    }
+  }),
+);
+
+/**
+ * @swagger
+ * /api/account/phone/verify-otp:
+ *   post:
+ *     summary: Verify mobile phone OTP and link to current user
+ *     tags: [Auth]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [phone, otp]
+ *             properties:
+ *               phone:
+ *                 type: string
+ *                 example: "+919876543210"
+ *               otp:
+ *                 type: string
+ *                 example: "123456"
+ *     responses:
+ *       200:
+ *         description: Phone verified and updated
+ *       400:
+ *         description: Invalid or expired OTP
+ *       409:
+ *         description: Phone number already in use
+ */
+router.post(
+  "/phone/verify-otp",
+  requireAuth,
+  validateBody(verifyOtpSchema),
+  asyncHandler(async (req: Request, res: Response) => {
+    const { phone, otp } = req.body;
+    const session = (req as any).session;
+    const userId = session.user.id;
+
+    try {
+      const result = await validatePhoneOtp(phone, otp);
+
+      // Check if another account already has this phone verified
+      const existingUser = await prisma.user.findFirst({
+        where: {
+          phone: result.normalizedPhone,
+          id: { not: userId },
+        },
+      });
+
+      if (existingUser) {
+        return ApiResponse.error(
+          res,
+          "This phone number is already verified with another Revvie account.",
+          409,
+          ErrorCode.CONFLICT,
+        );
+      }
+
+      const updatedUser = await prisma.user.update({
+        where: { id: userId },
+        data: {
+          phone: result.normalizedPhone,
+          phoneVerified: true,
+        },
+        select: {
+          id: true,
+          name: true,
+          email: true,
+          phone: true,
+          phoneVerified: true,
+        },
+      });
+
+      devLog("[AUTH] Phone verified successfully", {
+        userId,
+        phone: result.normalizedPhone,
+      });
+
+      ApiResponse.success(
+        res,
+        {
+          user: updatedUser,
+          phone: result.normalizedPhone,
+          phoneVerified: true,
+        },
+        "Phone number verified successfully!",
+      );
+    } catch (error: any) {
+      return ApiResponse.error(
+        res,
+        error.message || "Invalid or expired verification code",
+        400,
+        ErrorCode.INVALID_INPUT,
+      );
+    }
+  }),
+);
+
 
 /**
  * @swagger
@@ -943,4 +1102,125 @@ router.post(
   }),
 );
 
+/**
+ * Public Phone Auth Router
+ * Allows sign-in and account creation via SMS OTP.
+ */
+export const phoneAuthRouter = Router();
+
+phoneAuthRouter.post(
+  "/send-otp",
+  validateBody(sendOtpSchema),
+  asyncHandler(async (req: Request, res: Response) => {
+    const { phone } = req.body;
+    try {
+      const result = await initiatePhoneVerification(phone);
+      ApiResponse.success(
+        res,
+        {
+          expiresAt: result.expiresAt,
+          phone: result.normalizedPhone,
+        },
+        result.message,
+      );
+    } catch (error: any) {
+      return ApiResponse.error(
+        res,
+        error.message || "Failed to send verification code",
+        400,
+        ErrorCode.INVALID_INPUT,
+      );
+    }
+  }),
+);
+
+phoneAuthRouter.post(
+  "/verify-otp",
+  validateBody(verifyOtpSchema),
+  asyncHandler(async (req: Request, res: Response) => {
+    const { phone, otp } = req.body;
+    try {
+      const result = await validatePhoneOtp(phone, otp);
+
+      // Find existing user by phone
+      let user = await prisma.user.findFirst({
+        where: { phone: result.normalizedPhone },
+        include: {
+          userRoles: { select: { role: true } },
+        },
+      });
+
+      // If user doesn't exist, create account with phone
+      if (!user) {
+        user = await prisma.user.create({
+          data: {
+            phone: result.normalizedPhone,
+            phoneVerified: true,
+            name: `Rider ${result.normalizedPhone.slice(-4)}`,
+            userRoles: {
+              create: { role: "RIDER" },
+            },
+          },
+          include: {
+            userRoles: { select: { role: true } },
+          },
+        });
+      } else if (!user.phoneVerified) {
+        user = await prisma.user.update({
+          where: { id: user.id },
+          data: { phoneVerified: true },
+          include: {
+            userRoles: { select: { role: true } },
+          },
+        });
+      }
+
+      // Generate session token (Better Auth bearer plugin reads from Prisma session table)
+      const sessionToken = crypto.randomUUID();
+      const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
+
+      await prisma.session.create({
+        data: {
+          token: sessionToken,
+          userId: user.id,
+          expiresAt,
+          ipAddress: req.ip || null,
+          userAgent: req.headers["user-agent"] || null,
+        },
+      });
+
+      const roles = user.userRoles.map((r) => r.role);
+
+      devLog("[AUTH] Public phone login success", { userId: user.id, phone: result.normalizedPhone });
+
+      ApiResponse.success(
+        res,
+        {
+          token: sessionToken,
+          user: {
+            id: user.id,
+            name: user.name,
+            email: user.email,
+            phone: user.phone,
+            phoneVerified: user.phoneVerified,
+            username: user.username,
+            avatar: user.avatar,
+            roles,
+            onboardingCompleted: user.onboardingCompleted,
+          },
+        },
+        "Authenticated successfully via phone OTP",
+      );
+    } catch (error: any) {
+      return ApiResponse.error(
+        res,
+        error.message || "Failed to verify phone code",
+        400,
+        ErrorCode.INVALID_INPUT,
+      );
+    }
+  }),
+);
+
 export default router;
+

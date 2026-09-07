@@ -803,3 +803,62 @@ export function buildEventBookingConfirmationTemplate(params: {
     tags: ["event-booking", "ticket-pass"],
   };
 }
+
+/**
+ * Relays an anonymous marketplace inquiry to the seller. The buyer never gets an
+ * account or a conversation — this is the entire "contact seller" mechanism for the
+ * public web marketplace, so `replyTo` is set to the buyer's email by the caller,
+ * letting the seller just hit reply in their own inbox.
+ */
+export function buildMarketplaceContactTemplate(params: {
+  sellerName?: string | null;
+  listingTitle: string;
+  listingUrl: string;
+  buyerName: string;
+  buyerEmail: string;
+  buyerPhone?: string | null;
+  message: string;
+}): EmailTemplate {
+  const firstName = getFirstName(params.sellerName);
+  const greeting = firstName ? `Hi ${escapeHtml(firstName)},` : "Hi there,";
+
+  const sections: TemplateSection[] = [
+    { title: "Listing", description: params.listingTitle },
+    { title: "From", description: params.buyerName },
+    { title: "Email", description: params.buyerEmail },
+  ];
+
+  if (params.buyerPhone) {
+    sections.push({ title: "Phone", description: params.buyerPhone });
+  }
+
+  sections.push({ title: "Message", description: params.message });
+
+  const html = buildHtml({
+    preheader: `${params.buyerName} is interested in "${params.listingTitle}" on Revvie.`,
+    heading: "New marketplace inquiry",
+    greeting,
+    intro:
+      "Someone found your listing on the Revvie marketplace and wants to know more. Just reply to this email to get back to them directly.",
+    sections,
+    ctaLabel: "View Your Listing",
+    ctaUrl: params.listingUrl,
+  });
+
+  const text = buildText({
+    greeting,
+    heading: "New marketplace inquiry",
+    intro:
+      "Someone found your listing on the Revvie marketplace and wants to know more. Reply to this email to get back to them directly.",
+    sections,
+    ctaLabel: "View Your Listing",
+    ctaUrl: params.listingUrl,
+  });
+
+  return {
+    subject: `New inquiry about "${params.listingTitle}"`,
+    html,
+    text,
+    tags: ["marketplace-contact"],
+  };
+}

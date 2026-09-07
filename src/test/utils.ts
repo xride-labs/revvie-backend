@@ -177,6 +177,28 @@ export async function createTestListing(
 }
 
 /**
+ * Create an event for testing
+ */
+export async function createTestEvent(creatorId: string, eventData?: Partial<any>) {
+  const defaultEvent = {
+    title: "Test Event",
+    description: "A test motorcycle event",
+    location: "Test Venue",
+    scheduledAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+    visibility: "PUBLIC",
+    category: "MEETUP",
+    creatorId,
+  };
+
+  return prisma.event.create({
+    data: {
+      ...defaultEvent,
+      ...eventData,
+    },
+  });
+}
+
+/**
  * Add user to a club
  */
 export async function addUserToClub(

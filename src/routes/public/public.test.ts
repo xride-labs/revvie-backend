@@ -22,14 +22,31 @@ import {
   createTestRide,
   createTestClub,
   createTestListing,
+  createTestEvent,
   cleanupTestData,
 } from "../../test/utils";
+
+// `sendEmail`'s real behavior branches on Brevo being configured, which isn't
+// guaranteed in every environment these tests run in — mock it so the contact
+// endpoint's success/failure path is deterministic instead of environment-dependent.
+const { sendEmailMock } = vi.hoisted(() => ({
+  sendEmailMock: vi.fn(async () => true),
+}));
+
+vi.mock("../../lib/mailer.js", async (importActual) => {
+  const actual = await importActual<typeof import("../../lib/mailer.js")>();
+  return {
+    ...actual,
+    sendEmail: sendEmailMock,
+  };
+});
 
 // A well-formed (cuid-length) id that does not exist → real 404.
 const NONEXISTENT_ID = "clnonexistent000000000001";
 
 describe("Public Routes", () => {
   afterEach(async () => {
+    sendEmailMock.mockClear();
     await cleanupTestData();
   });
 
@@ -111,7 +128,7 @@ describe("Public Routes", () => {
   // GET /api/public/marketplace
   // ───────────────────────────────────────────────────────────────────────────
   describe("GET /api/public/marketplace", () => {
-    it("should return a curated preview list WITHOUT an auth header", async () => {
+    it("should return a curated, paginated listing list WITHOUT an auth header", async () => {
       const { user } = await createTestUser();
       const listing = await createTestListing(user.id, {
         title: "Used Helmet",
@@ -119,6 +136,7 @@ describe("Public Routes", () => {
         currency: "INR",
         condition: "Good",
         category: "Gear",
+        locationLabel: "Bengaluru",
         images: ["https://cdn.example.com/helmet.jpg"],
       });
 
@@ -126,20 +144,68 @@ describe("Public Routes", () => {
 
       expect(res.status).toBe(200);
       expect(res.body.success).toBe(true);
+      expect(res.body.data.pagination).toEqual({
+        page: 1,
+        limit: 20,
+        total: 1,
+        totalPages: 1,
+      });
       expect(res.body.data.listings).toContainEqual({
         id: listing.id,
         title: "Used Helmet",
         price: 150,
         currency: "INR",
         condition: "Good",
-        image: "https://cdn.example.com/helmet.jpg",
         category: "Gear",
+        subcategory: null,
+        images: ["https://cdn.example.com/helmet.jpg"],
+        locationLabel: "Bengaluru",
+        allowBids: true,
+        status: "ACTIVE",
         featured: false,
         seller: { id: user.id, name: user.name, avatar: user.avatar ?? null },
         club: null,
         rating: null,
         ratingCount: 0,
+        createdAt: listing.createdAt.toISOString(),
       });
+    });
+
+    it("should respect the limit param (landing page teaser passes limit=8)", async () => {
+      const { user } = await createTestUser();
+      for (let i = 0; i < 3; i++) {
+        await createTestListing(user.id, { title: `Item ${i}` });
+      }
+
+      const res = await request(app).get("/api/public/marketplace?limit=2");
+
+      expect(res.status).toBe(200);
+      expect(res.body.data.listings).toHaveLength(2);
+      expect(res.body.data.pagination.limit).toBe(2);
+      expect(res.body.data.pagination.total).toBe(3);
+      expect(res.body.data.pagination.totalPages).toBe(2);
+    });
+
+    it("should filter by category and price range", async () => {
+      const { user } = await createTestUser();
+      await createTestListing(user.id, {
+        title: "Cheap Gear",
+        category: "Gear",
+        price: 100,
+      });
+      await createTestListing(user.id, {
+        title: "Expensive Bike",
+        category: "Motorcycle",
+        price: 5000,
+      });
+
+      const res = await request(app).get(
+        "/api/public/marketplace?category=Gear&maxPrice=200",
+      );
+
+      expect(res.status).toBe(200);
+      expect(res.body.data.listings).toHaveLength(1);
+      expect(res.body.data.listings[0].title).toBe("Cheap Gear");
     });
 
     it("should not leak sellerId/coords/description", async () => {
@@ -152,17 +218,22 @@ describe("Public Routes", () => {
       const keys = Object.keys(res.body.data.listings[0]).sort();
       expect(keys).toEqual(
         [
+          "allowBids",
           "category",
           "club",
           "condition",
+          "createdAt",
           "currency",
           "featured",
           "id",
-          "image",
+          "images",
+          "locationLabel",
           "price",
           "rating",
           "ratingCount",
           "seller",
+          "status",
+          "subcategory",
           "title",
         ].sort(),
       );
@@ -236,10 +307,11 @@ describe("Public Routes", () => {
   // GET /api/public/marketplace/:id
   // ───────────────────────────────────────────────────────────────────────────
   describe("GET /api/public/marketplace/:id", () => {
-    it("should return a curated listing preview WITHOUT an auth header", async () => {
+    it("should return the full curated listing detail WITHOUT an auth header", async () => {
       const { user } = await createTestUser();
       const listing = await createTestListing(user.id, {
         title: "Used Helmet",
+        description: "Barely used, one season only.",
         price: 150,
         condition: "Good",
         category: "Gear",
@@ -255,16 +327,31 @@ describe("Public Routes", () => {
       expect(res.body.data).toEqual({
         id: listing.id,
         title: "Used Helmet",
+        description: "Barely used, one season only.",
         price: 150,
         currency: listing.currency,
         condition: "Good",
-        image: "https://cdn.example.com/helmet.jpg",
         category: "Gear",
+        subcategory: null,
+        images: ["https://cdn.example.com/helmet.jpg", "alt.jpg"],
+        videos: [],
+        specifications: null,
+        locationLabel: null,
+        allowBids: true,
+        latitude: listing.latitude,
+        longitude: listing.longitude,
         status: listing.status,
+        featured: false,
+        seller: { id: user.id, name: user.name, avatar: user.avatar ?? null },
+        club: null,
+        rating: null,
+        ratingCount: 0,
+        interestCount: 0,
+        createdAt: listing.createdAt.toISOString(),
       });
     });
 
-    it("should expose only curated fields and not leak sellerId/coords", async () => {
+    it("should expose only curated fields and not leak sellerId", async () => {
       const { user } = await createTestUser();
       const listing = await createTestListing(user.id);
 
@@ -273,35 +360,33 @@ describe("Public Routes", () => {
       );
 
       expect(res.status).toBe(200);
-      const keys = Object.keys(res.body.data).sort();
-      expect(keys).toEqual(
-        [
-          "category",
-          "condition",
-          "currency",
-          "id",
-          "image",
-          "price",
-          "status",
-          "title",
-        ].sort(),
-      );
       expect(res.body.data).not.toHaveProperty("sellerId");
-      expect(res.body.data).not.toHaveProperty("description");
-      expect(res.body.data).not.toHaveProperty("latitude");
-      expect(res.body.data).not.toHaveProperty("longitude");
     });
 
-    it("should default image to null when the listing has no images", async () => {
+    it("should return 404 for a DRAFT listing", async () => {
       const { user } = await createTestUser();
-      const listing = await createTestListing(user.id, { images: [] });
+      const listing = await createTestListing(user.id, { status: "DRAFT" });
 
       const res = await request(app).get(
         `/api/public/marketplace/${listing.id}`,
       );
 
-      expect(res.status).toBe(200);
-      expect(res.body.data.image).toBeNull();
+      expect(res.status).toBe(404);
+    });
+
+    it("should return 404 for a CLUB_ONLY listing", async () => {
+      const { user } = await createTestUser();
+      const club = await createTestClub(user.id);
+      const listing = await createTestListing(user.id, {
+        clubId: club.id,
+        visibility: "CLUB_ONLY",
+      });
+
+      const res = await request(app).get(
+        `/api/public/marketplace/${listing.id}`,
+      );
+
+      expect(res.status).toBe(404);
     });
 
     it("should return 404 for a well-formed nonexistent listing id", async () => {
@@ -311,6 +396,80 @@ describe("Public Routes", () => {
 
       expect(res.status).toBe(404);
       expect(res.body.success).toBe(false);
+    });
+  });
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // POST /api/public/marketplace/:id/contact
+  // ───────────────────────────────────────────────────────────────────────────
+  describe("POST /api/public/marketplace/:id/contact", () => {
+    it("should email the seller with replyTo set to the buyer's address", async () => {
+      const { user: seller } = await createTestUser({
+        email: "seller@example.com",
+        name: "Sam Seller",
+      });
+      const listing = await createTestListing(seller.id, { title: "Used Helmet" });
+
+      const res = await request(app)
+        .post(`/api/public/marketplace/${listing.id}/contact`)
+        .send({
+          name: "Barry Buyer",
+          email: "buyer@example.com",
+          message: "Is this still available?",
+        });
+
+      expect(res.status).toBe(200);
+      expect(res.body.success).toBe(true);
+      expect(sendEmailMock).toHaveBeenCalledTimes(1);
+      const call = sendEmailMock.mock.calls[0][0];
+      expect(call.to).toBe("seller@example.com");
+      expect(call.replyTo).toBe("buyer@example.com");
+      expect(call.subject).toContain("Used Helmet");
+    });
+
+    it("should reject a message that's too short", async () => {
+      const { user: seller } = await createTestUser();
+      const listing = await createTestListing(seller.id);
+
+      const res = await request(app)
+        .post(`/api/public/marketplace/${listing.id}/contact`)
+        .send({ name: "Barry", email: "buyer@example.com", message: "hi" });
+
+      expect(res.status).toBe(400);
+      expect(sendEmailMock).not.toHaveBeenCalled();
+    });
+
+    it("should reject an invalid email", async () => {
+      const { user: seller } = await createTestUser();
+      const listing = await createTestListing(seller.id);
+
+      const res = await request(app)
+        .post(`/api/public/marketplace/${listing.id}/contact`)
+        .send({ name: "Barry", email: "not-an-email", message: "Is this available?" });
+
+      expect(res.status).toBe(400);
+      expect(sendEmailMock).not.toHaveBeenCalled();
+    });
+
+    it("should return 404 for a nonexistent listing", async () => {
+      const res = await request(app)
+        .post(`/api/public/marketplace/${NONEXISTENT_ID}/contact`)
+        .send({ name: "Barry", email: "buyer@example.com", message: "Still available?" });
+
+      expect(res.status).toBe(404);
+      expect(sendEmailMock).not.toHaveBeenCalled();
+    });
+
+    it("should return 502 when the email fails to send", async () => {
+      sendEmailMock.mockResolvedValueOnce(false);
+      const { user: seller } = await createTestUser();
+      const listing = await createTestListing(seller.id);
+
+      const res = await request(app)
+        .post(`/api/public/marketplace/${listing.id}/contact`)
+        .send({ name: "Barry", email: "buyer@example.com", message: "Still available?" });
+
+      expect(res.status).toBe(502);
     });
   });
 
@@ -381,6 +540,119 @@ describe("Public Routes", () => {
       const res = await request(app).get(
         `/api/public/clubs/${NONEXISTENT_ID}`,
       );
+
+      expect(res.status).toBe(404);
+      expect(res.body.success).toBe(false);
+    });
+  });
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // GET /api/public/events
+  // ───────────────────────────────────────────────────────────────────────────
+  describe("GET /api/public/events", () => {
+    it("should return upcoming PUBLIC events WITHOUT an auth header", async () => {
+      const { user } = await createTestUser();
+      const event = await createTestEvent(user.id, { title: "Public Meetup" });
+
+      const res = await request(app).get("/api/public/events");
+
+      expect(res.status).toBe(200);
+      expect(res.body.success).toBe(true);
+      const found = res.body.data.events.find((e: any) => e.id === event.id);
+      expect(found).toBeTruthy();
+      expect(found.title).toBe("Public Meetup");
+      expect(found.participantCount).toBe(0);
+      expect(found).not.toHaveProperty("isAttending");
+      expect(found).not.toHaveProperty("isHost");
+    });
+
+    it("should exclude CLUB_ONLY and PRIVATE events", async () => {
+      const { user } = await createTestUser();
+      await createTestEvent(user.id, { title: "Club Ride", visibility: "CLUB_ONLY" });
+      await createTestEvent(user.id, { title: "Secret Party", visibility: "PRIVATE" });
+
+      const res = await request(app).get("/api/public/events");
+
+      expect(res.status).toBe(200);
+      const titles = res.body.data.events.map((e: any) => e.title);
+      expect(titles).not.toContain("Club Ride");
+      expect(titles).not.toContain("Secret Party");
+    });
+
+    it("should exclude cancelled and past events", async () => {
+      const { user } = await createTestUser();
+      await createTestEvent(user.id, { title: "Cancelled Ride", status: "CANCELLED" });
+      await createTestEvent(user.id, {
+        title: "Past Ride",
+        scheduledAt: new Date(Date.now() - 24 * 60 * 60 * 1000),
+      });
+
+      const res = await request(app).get("/api/public/events");
+
+      expect(res.status).toBe(200);
+      const titles = res.body.data.events.map((e: any) => e.title);
+      expect(titles).not.toContain("Cancelled Ride");
+      expect(titles).not.toContain("Past Ride");
+    });
+
+    it("should filter by category and search", async () => {
+      const { user } = await createTestUser();
+      await createTestEvent(user.id, { title: "Track Day Special", category: "TRACK_DAY" });
+      await createTestEvent(user.id, { title: "Sunday Breakfast Run", category: "MEETUP" });
+
+      const res = await request(app).get("/api/public/events?category=TRACK_DAY");
+
+      expect(res.status).toBe(200);
+      expect(res.body.data.events).toHaveLength(1);
+      expect(res.body.data.events[0].title).toBe("Track Day Special");
+    });
+  });
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // GET /api/public/events/:id
+  // ───────────────────────────────────────────────────────────────────────────
+  describe("GET /api/public/events/:id", () => {
+    it("should return a PUBLIC event's full detail WITHOUT an auth header", async () => {
+      const { user } = await createTestUser();
+      const event = await createTestEvent(user.id, { title: "Public Meetup" });
+
+      const res = await request(app).get(`/api/public/events/${event.id}`);
+
+      expect(res.status).toBe(200);
+      expect(res.body.data.id).toBe(event.id);
+      expect(res.body.data.title).toBe("Public Meetup");
+      expect(res.body.data.participantCount).toBe(0);
+    });
+
+    it("should return 404 for a CLUB_ONLY event", async () => {
+      const { user } = await createTestUser();
+      const event = await createTestEvent(user.id, { visibility: "CLUB_ONLY" });
+
+      const res = await request(app).get(`/api/public/events/${event.id}`);
+
+      expect(res.status).toBe(404);
+    });
+
+    it("should return 404 for a PRIVATE event", async () => {
+      const { user } = await createTestUser();
+      const event = await createTestEvent(user.id, { visibility: "PRIVATE" });
+
+      const res = await request(app).get(`/api/public/events/${event.id}`);
+
+      expect(res.status).toBe(404);
+    });
+
+    it("should return 404 for a cancelled event", async () => {
+      const { user } = await createTestUser();
+      const event = await createTestEvent(user.id, { status: "CANCELLED" });
+
+      const res = await request(app).get(`/api/public/events/${event.id}`);
+
+      expect(res.status).toBe(404);
+    });
+
+    it("should return 404 for a well-formed nonexistent event id", async () => {
+      const res = await request(app).get(`/api/public/events/${NONEXISTENT_ID}`);
 
       expect(res.status).toBe(404);
       expect(res.body.success).toBe(false);

@@ -14,6 +14,7 @@ import { connectMongoDB } from "./lib/mongodb.js";
 import { setupSwagger } from "./config/swagger.js";
 import {
   accountRoutes,
+  phoneAuthRouter,
   userRoutes,
   rideRoutes,
   clubRoutes,
@@ -141,7 +142,19 @@ app.use("/api/auth", (req: Request, res: Response, next: NextFunction) => {
 // Block new registrations when disabled (auth endpoints only)
 app.use("/api/auth", signupGateMiddleware);
 
-// Better Auth handler — MUST be mounted BEFORE express.json()
+// Public Phone Auth endpoints (SMS OTP via APITxT)
+// Mounted BEFORE Better Auth handler with express.json body parser
+app.use("/api/auth/phone", express.json(), phoneAuthRouter);
+app.use("/api/auth/send-otp", express.json(), (req: Request, res: Response, next: NextFunction) => {
+  req.url = "/send-otp";
+  phoneAuthRouter(req, res, next);
+});
+app.use("/api/auth/verify-otp", express.json(), (req: Request, res: Response, next: NextFunction) => {
+  req.url = "/verify-otp";
+  phoneAuthRouter(req, res, next);
+});
+
+// Better Auth handler — MUST be mounted BEFORE global express.json()
 // See: https://www.better-auth.com/docs/integrations/express
 app.all("/api/auth/*", toNodeHandler(auth));
 
