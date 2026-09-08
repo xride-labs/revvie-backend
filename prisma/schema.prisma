@@ -47,6 +47,26 @@ model Session {
   @@map("sessions")
 }
 
+model Passkey {
+  id           String    @id @default(cuid())
+  name         String?
+  publicKey    String    @map("public_key")
+  userId       String    @map("user_id")
+  credentialID String    @map("credential_id")
+  counter      Int
+  deviceType   String    @map("device_type")
+  backedUp     Boolean   @map("backed_up")
+  transports   String?
+  createdAt    DateTime? @default(now()) @map("created_at")
+  aaguid       String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([credentialID])
+  @@map("passkeys")
+}
+
 model User {
   id            String    @id @default(cuid())
   username      String?   @unique
@@ -98,6 +118,7 @@ model User {
   // Relations
   accounts            Account[]
   sessions            Session[]
+  passkeys            Passkey[]
   createdRides        Ride[]               @relation("RideCreator")
   ledRides            Ride[]               @relation("RideLead")
   rideParticipations  RideParticipant[]

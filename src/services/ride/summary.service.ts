@@ -71,15 +71,14 @@ export function computeRideSummary(
 
   const score = computeScore({
     distanceKm: distance,
-    maxSpeedKmh: maxSpeed,
     elevationGainM: elevation,
     movingTimeSec,
     idleTimeSec,
+    breakCount,
   });
 
   const highlights = computeHighlights({
     distanceKm: distance,
-    maxSpeedKmh: maxSpeed,
     elevationGainM: elevation,
     movingTimeSec,
     breakCount,
@@ -87,7 +86,6 @@ export function computeRideSummary(
 
   const badges = computeBadgeSlugs({
     distanceKm: distance,
-    maxSpeedKmh: maxSpeed,
     elevationGainM: elevation,
     movingTimeSec,
   });
@@ -154,24 +152,28 @@ function sumBreakDurationSec(
 
 function computeScore(args: {
   distanceKm: number;
-  maxSpeedKmh: number;
   elevationGainM: number;
   movingTimeSec: number;
   idleTimeSec: number;
+  breakCount?: number;
 }): number {
-  // Caps are picked so a typical 50km solo ride at 60km/h scores ~70.
-  const distancePts = clamp(args.distanceKm * 0.6, 0, 40);
-  const speedPts = clamp(args.maxSpeedKmh * 0.25, 0, 25);
-  const elevationPts = clamp(args.elevationGainM * 0.05, 0, 20);
-  const movingPts = clamp(args.movingTimeSec / 60, 0, 25); // 1 pt per minute, capped
-  const idlePenalty = clamp(args.idleTimeSec / 120, 0, 20); // −1 pt per 2min idle, capped
-  const raw = distancePts + speedPts + elevationPts + movingPts - idlePenalty;
+  // Distance points: up to 50 pts (0.5 pts per km, capped at 100km)
+  const distancePts = clamp(args.distanceKm * 0.5, 0, 50);
+  // Elevation points: up to 25 pts (0.025 pts per meter, 1000m climb = 25 pts)
+  const elevationPts = clamp(args.elevationGainM * 0.025, 0, 25);
+  // Moving consistency: up to 25 pts (1 pt per 2 minutes moving, capped at 25 pts)
+  const movingPts = clamp(args.movingTimeSec / 120, 0, 25);
+  
+  // Safety rest bonus: riders on long rides (>2 hours) who take safety/fuel breaks earn a bonus.
+  // NOTE: Speed points and idle penalties are completely removed per Plan §6.3 and Gamification Spec.
+  const safetyRestBonus = args.movingTimeSec >= 7200 && (args.breakCount ?? 0) > 0 ? 5 : 0;
+
+  const raw = distancePts + elevationPts + movingPts + safetyRestBonus;
   return Math.round(clamp(raw, 0, 100));
 }
 
 function computeHighlights(args: {
   distanceKm: number;
-  maxSpeedKmh: number;
   elevationGainM: number;
   movingTimeSec: number;
   breakCount: number;
@@ -180,27 +182,24 @@ function computeHighlights(args: {
   if (args.distanceKm >= 200) out.push("Epic 200km+ ride");
   else if (args.distanceKm >= 100) out.push("Century ride (100km+)");
   else if (args.distanceKm >= 50) out.push("Half-century (50km+)");
-  if (args.maxSpeedKmh >= 120)
-    out.push(`Top speed ${Math.round(args.maxSpeedKmh)} km/h`);
   if (args.elevationGainM >= 1000)
     out.push(`Climbed ${Math.round(args.elevationGainM)}m`);
   if (args.movingTimeSec >= 4 * 60 * 60) out.push("4h+ in the saddle");
-  if (args.breakCount === 0 && args.distanceKm >= 30)
-    out.push("No breaks needed");
+  if (args.breakCount >= 1 && args.movingTimeSec >= 2 * 60 * 60)
+    out.push("Safe tourer: rest breaks taken");
   return out;
 }
 
 function computeBadgeSlugs(args: {
   distanceKm: number;
-  maxSpeedKmh: number;
   elevationGainM: number;
   movingTimeSec: number;
 }): string[] {
   const out: string[] = [];
   if (args.distanceKm >= 100) out.push("century");
   if (args.distanceKm >= 200) out.push("double-century");
-  if (args.maxSpeedKmh >= 150) out.push("speed-demon");
-  if (args.elevationGainM >= 1500) out.push("mountain-goat");
+  if (args.distanceKm >= 300) out.push("iron-saddle");
+  if (args.elevationGainM >= 1000) out.push("mountain-goat");
   if (args.movingTimeSec >= 6 * 60 * 60) out.push("iron-butt");
   return out;
 }

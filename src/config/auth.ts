@@ -353,7 +353,11 @@ export const auth = betterAuth({
         if (!sent) throw new Error("Failed to send Magic Link email");
       },
     }),
-    passkey(),
+    passkey({
+      rpID: process.env.PASSKEY_RP_ID || (process.env.AUTH_URL ? new URL(process.env.AUTH_URL).hostname : "localhost"),
+      rpName: process.env.PASSKEY_RP_NAME || "Revvie",
+      origin: process.env.PASSKEY_ORIGINS ? process.env.PASSKEY_ORIGINS.split(",") : undefined,
+    }),
   ],
 });
 

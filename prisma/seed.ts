@@ -727,51 +727,86 @@ async function main() {
   });
   console.log("✅ Created bikes");
 
-  // ── Badges ───────────────────────────────────────────────────────
+  // ── Badges (Motorcycle Mastery Catalogue) ───────────────────────────
   const badges = await Promise.all([
     prisma.badge.create({
       data: {
         title: "First Ride",
-        description: "Completed your first ride",
+        description: "Completed your first verified ride",
         icon: "🏁",
-        auraPoints: 100,
-        category: "achievement",
+        auraPoints: 50,
+        category: "milestone",
+        requirement: "Complete 1 verified GPS ride",
+      },
+    }),
+    prisma.badge.create({
+      data: {
+        title: "Century Rider",
+        description: "Completed a single ride of 100+ km",
+        icon: "⚡",
+        auraPoints: 150,
+        category: "distance",
+        requirement: "Complete a single ride >= 100km",
+      },
+    }),
+    prisma.badge.create({
+      data: {
+        title: "Double Century",
+        description: "Completed a single ride of 200+ km",
+        icon: "🦅",
+        auraPoints: 250,
+        category: "distance",
+        requirement: "Complete a single ride >= 200km",
       },
     }),
     prisma.badge.create({
       data: {
         title: "1000 KM Club",
-        description: "Crossed 1000km total distance",
+        description: "Crossed 1,000 km total riding distance",
         icon: "🔥",
-        auraPoints: 150,
-        category: "distance",
+        auraPoints: 300,
+        category: "odometer",
+        requirement: "Accumulate 1,000km verified total riding distance",
       },
     }),
     prisma.badge.create({
       data: {
-        title: "Night Owl",
-        description: "Completed 10 night rides",
-        icon: "🌙",
-        auraPoints: 120,
-        category: "activity",
-      },
-    }),
-    prisma.badge.create({
-      data: {
-        title: "Social Butterfly",
-        description: "Made 5 friends on the platform",
-        icon: "🦋",
-        auraPoints: 80,
-        category: "social",
-      },
-    }),
-    prisma.badge.create({
-      data: {
-        title: "Marketplace Pro",
-        description: "Sold 10 items on the marketplace",
-        icon: "💰",
+        title: "Mountain Pioneer",
+        description: "Climbed 1,000+ meters of elevation in one ride",
+        icon: "⛰️",
         auraPoints: 200,
-        category: "marketplace",
+        category: "elevation",
+        requirement: "Climb >= 1,000m elevation in a single ride",
+      },
+    }),
+    prisma.badge.create({
+      data: {
+        title: "Night Navigator",
+        description: "Completed 5 night rides",
+        icon: "🌙",
+        auraPoints: 150,
+        category: "condition",
+        requirement: "Complete 5 rides after sunset",
+      },
+    }),
+    prisma.badge.create({
+      data: {
+        title: "Iron Saddle",
+        description: "Completed a single 300+ km tour or 6+ hours moving time",
+        icon: "🛡️",
+        auraPoints: 400,
+        category: "endurance",
+        requirement: "Complete a single ride >= 300km or 6h moving time",
+      },
+    }),
+    prisma.badge.create({
+      data: {
+        title: "Road Captain",
+        description: "Led 3 group rides safely with 0 safety incidents",
+        icon: "🧭",
+        auraPoints: 250,
+        category: "leadership",
+        requirement: "Lead 3 group rides as Road Captain",
       },
     }),
   ]);

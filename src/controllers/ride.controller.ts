@@ -19,7 +19,7 @@ import { ElevationService } from "../services/ride/elevation.service.js";
 import { computeRideSummary, deriveEffectiveDurationSec } from "../services/ride/summary.service.js";
 import { LocationService } from "../services/location/location.service.js";
 import { rideToGpx } from "../lib/gpx.js";
-import { awardBadgeByTitle, awardXp } from "../lib/xp.js";
+import { awardBadgeByTitle, awardXp, awardDistanceXp, evaluateAndAwardRideBadges } from "../lib/xp.js";
 import { isStaff } from "../lib/utils/permissions.js";
 import { RideService } from "../services/ride/ride.service.js";
 import { isUserPro, countUserRidesThisMonth, FREE_RIDES_PER_MONTH_LIMIT, FREE_RIDERS_PER_RIDE_LIMIT } from "../lib/subscription.js";
@@ -576,13 +576,17 @@ export class RideController {
     }
 
     if (justFinished) {
-      await awardXp(session.user.id, "RIDE_COMPLETED", `ride ${id}`);
+      try {
+        const distanceKm = trackingData.totalDistanceKm ?? 0;
+        await awardDistanceXp(session.user.id, distanceKm, `ride ${id}`);
+        await awardXp(session.user.id, "RIDE_COMPLETED", `ride ${id}`);
 
-      const completedCount = await prisma.rideParticipant.count({
-        where: { userId: session.user.id, status: "ACCEPTED" },
-      });
-      if (completedCount === 1) {
-        await awardBadgeByTitle(session.user.id, "First Ride");
+        await evaluateAndAwardRideBadges(session.user.id, {
+          distanceKm,
+          elevationM: trackingData.elevationGainM ?? 0,
+        });
+      } catch (err) {
+        console.error("[TRACKING] post-completion rewards failed", err);
       }
     }
 
@@ -804,18 +808,73 @@ export class RideController {
       throw err;
     }
 
-    // 8. Award XP + first-ride badge to the creator. Outside the transaction
-    //    so a downstream notification failure can't roll back the ride end.
+    // 8. Award XP + authentic competence badges & update userRideStats for participants
     try {
-      await awardXp(userId, "RIDE_COMPLETED", `ride ${id}`);
-      const completedCount = await prisma.rideParticipant.count({
-        where: { userId, status: "ACCEPTED" },
+      const distanceKm = result.summary?.totalDistanceKm ?? 0;
+      const elevationM = result.summary?.elevationGainM ?? 0;
+      const isNight = Boolean(
+        result.trackingData?.actualStartTime &&
+        (new Date(result.trackingData.actualStartTime).getUTCHours() >= 18 ||
+         new Date(result.trackingData.actualStartTime).getUTCHours() <= 5)
+      );
+
+      // Fetch all participants who rode (accepted or completed)
+      const participants = await prisma.rideParticipant.findMany({
+        where: { rideId: id, status: { in: ["ACCEPTED", "COMPLETED"] } },
+        select: { userId: true },
       });
-      if (completedCount === 1) {
-        await awardBadgeByTitle(userId, "First Ride");
+
+      // Distinct list including creator
+      const riderIds = Array.from(new Set([userId, ...participants.map((p) => p.userId)]));
+
+      for (const riderId of riderIds) {
+        const isLead = riderId === result.ride.creatorId;
+
+        // Update UserRideStats atomically
+        const existingStats = await prisma.userRideStats.findUnique({
+          where: { userId: riderId },
+        });
+
+        const newTotalKm = (existingStats?.totalDistanceKm ?? 0) + Math.round(distanceKm);
+        const longest = Math.max(existingStats?.longestRideKm ?? 0, Math.round(distanceKm));
+        const totalRides = (existingStats?.totalRides ?? 0) + 1;
+        const nightCount = (existingStats?.nightRides ?? 0) + (isNight ? 1 : 0);
+
+        await prisma.userRideStats.upsert({
+          where: { userId: riderId },
+          create: {
+            userId: riderId,
+            totalDistanceKm: Math.round(distanceKm),
+            longestRideKm: Math.round(distanceKm),
+            totalRides: 1,
+            nightRides: isNight ? 1 : 0,
+          },
+          update: {
+            totalDistanceKm: newTotalKm,
+            longestRideKm: longest,
+            totalRides,
+            nightRides: nightCount,
+          },
+        });
+
+        // Award verified distance XP (1 XP per km) + completion bonus
+        await awardDistanceXp(riderId, distanceKm, `Ride: ${result.ride.title || id}`);
+        await awardXp(riderId, "RIDE_COMPLETED", `ride ${id}`);
+
+        if (isLead && riderIds.length > 1) {
+          await awardXp(riderId, "GROUP_RIDE_LEAD", `led ride ${id}`);
+        }
+
+        // Evaluate motorcycle mastery badges
+        await evaluateAndAwardRideBadges(riderId, {
+          distanceKm,
+          elevationM,
+          isNight,
+          isLead,
+        });
       }
     } catch (err) {
-      console.error("[RIDE_END] post-completion rewards failed", err);
+      console.error("[RIDE_END] post-completion rewards and stats update failed", err);
     }
 
     // 9. Notify everyone in the ride room, clear the rider cache, and drop

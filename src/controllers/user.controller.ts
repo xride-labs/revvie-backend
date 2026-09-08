@@ -13,27 +13,120 @@ function buildUserProfileResponse(user: any) {
 }
 export class UserController {
   static async getLeaderboard(req: Request, res: Response) {
-
     const limit = Math.min(
       Math.max(parseInt(String(req.query.limit ?? "50"), 10) || 50, 1),
       100,
     );
+    const rawScope = String(req.query.scope ?? "global").toLowerCase();
     const scope =
-      String(req.query.scope ?? "global").toLowerCase() === "city"
-        ? "city"
-        : "global";
+      rawScope === "city" ? "city" : rawScope === "club" ? "club" : "global";
     const city =
       typeof req.query.city === "string" && req.query.city.trim()
         ? req.query.city.trim()
         : null;
+    const clubId =
+      typeof req.query.clubId === "string" && req.query.clubId.trim()
+        ? req.query.clubId.trim()
+        : null;
+    const timeframe =
+      String(req.query.timeframe ?? "all_time").toLowerCase() === "monthly"
+        ? "monthly"
+        : "all_time";
 
-    // City scope is best-effort: User.location is free-text, so we
-    // case-insensitively contains-match. With scope=city but no city
-    // supplied, fall back to global.
-    const where =
-      scope === "city" && city
-        ? { location: { contains: city, mode: "insensitive" as const } }
-        : {};
+    const where: any = {};
+    if (scope === "city" && city) {
+      where.location = { contains: city, mode: "insensitive" as const };
+    } else if (scope === "club" && clubId) {
+      where.OR = [
+        { clubMemberships: { some: { clubId } } },
+        { createdClubs: { some: { id: clubId } } },
+      ];
+    }
+
+    if (timeframe === "monthly") {
+      const now = new Date();
+      const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+
+      // Fetch rides completed this month
+      const monthlyParticipations = await prisma.rideParticipant.findMany({
+        where: {
+          status: { in: ["ACCEPTED", "COMPLETED"] },
+          ride: {
+            status: "COMPLETED",
+            endedAt: { gte: startOfMonth },
+            ...(scope === "club" && clubId ? { clubId } : {}),
+          },
+          ...(scope === "city" && city ? { user: { location: { contains: city, mode: "insensitive" as const } } } : {}),
+          ...(scope === "club" && clubId
+            ? {
+                user: {
+                  OR: [
+                    { clubMemberships: { some: { clubId } } },
+                    { createdClubs: { some: { id: clubId } } },
+                  ],
+                },
+              }
+            : {}),
+        },
+        select: {
+          userId: true,
+          ride: {
+            select: {
+              effectiveDistanceKm: true,
+              summary: { select: { totalDistanceKm: true } },
+            },
+          },
+          user: {
+            select: {
+              id: true,
+              username: true,
+              name: true,
+              avatar: true,
+              location: true,
+              xpPoints: true,
+              level: true,
+              levelTitle: true,
+              subscriptionTier: true,
+              rideStats: { select: { totalDistanceKm: true } },
+            },
+          },
+        },
+      });
+
+      const userMap = new Map<string, { user: any; monthlyKm: number; ridesCount: number }>();
+      for (const p of monthlyParticipations) {
+        if (!p.user) continue;
+        const km = p.ride.summary?.totalDistanceKm ?? p.ride.effectiveDistanceKm ?? 0;
+        const current = userMap.get(p.userId) || { user: p.user, monthlyKm: 0, ridesCount: 0 };
+        current.monthlyKm += km;
+        current.ridesCount += 1;
+        userMap.set(p.userId, current);
+      }
+
+      if (userMap.size > 0) {
+        const sorted = Array.from(userMap.values())
+          .sort((a, b) => b.monthlyKm - a.monthlyKm || (b.user.xpPoints ?? 0) - (a.user.xpPoints ?? 0))
+          .slice(0, limit);
+
+        const ranked = sorted.map((item, idx) => ({
+          rank: idx + 1,
+          id: item.user.id,
+          username: item.user.username,
+          name: item.user.name,
+          avatar: item.user.avatar,
+          location: item.user.location,
+          xpPoints: item.user.xpPoints ?? 0,
+          level: item.user.level,
+          levelTitle: item.user.levelTitle,
+          subscriptionTier: item.user.subscriptionTier,
+          totalDistanceKm: item.user.rideStats?.totalDistanceKm ?? 0,
+          monthlyDistanceKm: Math.round(item.monthlyKm),
+          monthlyRidesCount: item.ridesCount,
+        }));
+
+        return ApiResponse.success(res, { scope, city, clubId, timeframe, leaderboard: ranked });
+      }
+    }
 
     const users = await prisma.user.findMany({
       where,
@@ -49,17 +142,26 @@ export class UserController {
         level: true,
         levelTitle: true,
         subscriptionTier: true,
+        rideStats: { select: { totalDistanceKm: true } },
       },
     });
 
     const ranked = users.map((u, idx) => ({
       rank: idx + 1,
-      ...u,
+      id: u.id,
+      username: u.username,
+      name: u.name,
+      avatar: u.avatar,
+      location: u.location,
       xpPoints: u.xpPoints ?? 0,
+      level: u.level,
+      levelTitle: u.levelTitle,
+      subscriptionTier: u.subscriptionTier,
+      totalDistanceKm: u.rideStats?.totalDistanceKm ?? 0,
+      monthlyDistanceKm: 0,
     }));
 
-    ApiResponse.success(res, { scope, city, leaderboard: ranked });
-  
+    ApiResponse.success(res, { scope, city, clubId, timeframe, leaderboard: ranked });
   }
 
   static async getRoot(req: Request, res: Response) {
