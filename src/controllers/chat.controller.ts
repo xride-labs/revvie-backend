@@ -7,7 +7,6 @@ import {
 import { ConversationType, MessageType } from "../models/chat.model.js";
 import { ApiResponse, ErrorCode } from "../lib/utils/apiResponse.js";
 import { fanoutNewMessage } from "../lib/socket.js";
-import prisma from "../lib/prisma.js";
 
 // ─── Conversations ───────────────────────────────────────────────────────────
 

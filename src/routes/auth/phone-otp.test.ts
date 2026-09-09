@@ -69,7 +69,7 @@ describe("Phone OTP Verification (APITxT)", () => {
       const record = await prisma.verification.findFirst({
         where: { identifier },
       });
-      const storedOtp = record?.value.split(":")[0]!;
+      const storedOtp = record ? record.value.split(":")[0] : "";
 
       const verifyRes = await validatePhoneOtp(testPhone, storedOtp);
       expect(verifyRes.success).toBe(true);
@@ -126,7 +126,7 @@ describe("Phone OTP Verification (APITxT)", () => {
       const record = await prisma.verification.findFirst({
         where: { identifier: `phone:${normalizedPhone}` },
       });
-      const otp = record?.value.split(":")[0]!;
+      const otp = record ? record.value.split(":")[0] : "";
 
       // 2. Verify OTP
       const verifyRes = await request(app)
@@ -165,7 +165,7 @@ describe("Phone OTP Verification (APITxT)", () => {
       const record = await prisma.verification.findFirst({
         where: { identifier: `phone:${normalized}` },
       });
-      const otp = record?.value.split(":")[0]!;
+      const otp = record ? record.value.split(":")[0] : "";
 
       // 2. Verify OTP publicly
       const verifyRes = await request(app)

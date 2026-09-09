@@ -20,7 +20,6 @@ import {
   createListingOfferSchema,
   updateListingOfferSchema,
   createSavedSearchSchema,
-  paginationSchema,
 } from "../../validators/schemas.js";
 import {
   countUserActiveListings,

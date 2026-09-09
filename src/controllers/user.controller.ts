@@ -1,11 +1,7 @@
-import { normalizeEmail, getPhoneVariants } from "../lib/utils/validation.js";
-import { Router, Request, Response } from "express";
-import { Prisma, UserRole } from "@prisma/client";
+import { Request, Response } from "express";
+import { Prisma } from "@prisma/client";
 import prisma from "../lib/prisma.js";
-import { requireAuth } from "../config/auth.js";
-import { ApiResponse, ErrorCode } from "../lib/utils/apiResponse.js";
-import { requireAdmin } from "../middlewares/rbac.js";
-import { z } from "zod";
+import { ApiResponse } from "../lib/utils/apiResponse.js";
 
 interface MonthlyLeaderboardUser {
   id: string;
@@ -22,8 +18,9 @@ interface MonthlyLeaderboardUser {
 
 function buildUserProfileResponse<T extends Record<string, unknown>>(user: T | null): Omit<T, "password"> | null {
   if (!user) return null;
-  const { password, ...safeUser } = user as T & { password?: unknown };
-  return safeUser;
+  const safeUser = { ...user };
+  delete (safeUser as { password?: unknown }).password;
+  return safeUser as Omit<T, "password">;
 }
 export class UserController {
   static async getLeaderboard(req: Request, res: Response) {

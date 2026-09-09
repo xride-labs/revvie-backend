@@ -158,8 +158,8 @@ describe("garbage credentials per endpoint", () => {
   it.each(endpoints.map((e) => [`${e.method.toUpperCase()} ${e.path}`, e] as const))(
     "%s rejects forged tokens without a 5xx",
     async (_sig, ep) => {
-      const res = await request(app)
-        [ep.method](ep.path)
+      const agent = request(app);
+      const res = await agent[ep.method](ep.path)
         .set("Authorization", "Bearer not-a-real-token-value-1234567890")
         .send();
       expectInvariant(res);
@@ -176,8 +176,8 @@ describe("malformed JSON body per mutating endpoint", () => {
   it.each(bodyEndpoints().map((e) => [`${e.method.toUpperCase()} ${e.path}`, e] as const))(
     "%s returns 400 (never 500) on broken JSON",
     async (_sig, ep) => {
-      const res = await request(app)
-        [ep.method](ep.path)
+      const agent = request(app);
+      const res = await agent[ep.method](ep.path)
         .set("Content-Type", "application/json")
         .send('{"broken":');
       // Body-parser failures are handled before auth → deterministic 400.

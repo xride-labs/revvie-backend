@@ -1,7 +1,7 @@
 import { Router } from "express";
 import prisma from "../../lib/prisma.js";
 import { requireAuth } from "../../config/auth.js";
-import { ApiResponse, ErrorCode } from "../../lib/utils/apiResponse.js";
+import { ApiResponse } from "../../lib/utils/apiResponse.js";
 import { asyncHandler, validateBody, validateQuery } from "../../middlewares/validation.js";
 import { z } from "zod";
 import { ExpenseCategory } from "@prisma/client";

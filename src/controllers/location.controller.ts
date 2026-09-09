@@ -1,12 +1,8 @@
-import { Router, Request, Response, NextFunction } from "express";
-import { requireAuth } from "../config/auth.js";
-import { z } from "zod";
+import { Request, Response } from "express";
 import { LocationService } from "../services/location/location.service.js";
 import { LocationSettingsService } from "../services/location/settings.service.js";
-import { ApiResponse, ErrorCode } from "../lib/utils/apiResponse.js";
-import { requirePro, isUserPro } from "../lib/subscription.js";
+import { ApiResponse } from "../lib/utils/apiResponse.js";
 import { broadcastRiderLocation } from "../lib/socket.js";
-import prisma from "../lib/prisma.js";
 
 export class LocationController {
   static async postRoot(req: Request, res: Response) {

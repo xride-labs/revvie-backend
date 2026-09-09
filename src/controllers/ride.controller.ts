@@ -7,19 +7,15 @@ export class RideAlreadyEndedError extends Error {
     this.name = "RideAlreadyEndedError";
   }
 }
-import { Router, Request, Response } from "express";
-import rateLimit, { ipKeyGenerator } from "express-rate-limit";
-import { z } from "zod";
+import { Request, Response } from "express";
 import prisma from "../lib/prisma.js";
-import { requireAuth } from "../config/auth.js";
 import { ApiResponse, ErrorCode } from "../lib/utils/apiResponse.js";
-import { sendRideJoinRequestEmail } from "../lib/mailer.js";
-import { createNotification, notifyUsers } from "../lib/notifications.js";
+import { notifyUsers } from "../lib/notifications.js";
 import { ElevationService } from "../services/ride/elevation.service.js";
 import { computeRideSummary, deriveEffectiveDurationSec } from "../services/ride/summary.service.js";
 import { LocationService } from "../services/location/location.service.js";
 import { rideToGpx } from "../lib/gpx.js";
-import { awardBadgeByTitle, awardXp, awardDistanceXp, evaluateAndAwardRideBadges } from "../lib/xp.js";
+import { awardXp, awardDistanceXp, evaluateAndAwardRideBadges } from "../lib/xp.js";
 import { isStaff } from "../lib/utils/permissions.js";
 import { RideService } from "../services/ride/ride.service.js";
 import { isUserPro, countUserRidesThisMonth, FREE_RIDES_PER_MONTH_LIMIT, FREE_RIDERS_PER_RIDE_LIMIT } from "../lib/subscription.js";
@@ -1040,8 +1036,6 @@ export class RideController {
   }
 
   static async postByIdPause(req: Request, res: Response) {
-
-    const session = (req as any).session;
     const { id } = req.params;
 
     const ride = await prisma.ride.findUnique({
@@ -1060,12 +1054,9 @@ export class RideController {
     });
 
     ApiResponse.success(res, null, "Ride paused");
-
   }
 
   static async postByIdResume(req: Request, res: Response) {
-
-    const session = (req as any).session;
     const { id } = req.params;
 
     const ride = await prisma.ride.findUnique({

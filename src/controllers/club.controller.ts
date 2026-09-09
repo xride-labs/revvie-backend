@@ -1,4 +1,3 @@
-import prisma from "../lib/prisma.js";
 import { Request, Response } from "express";
 import { ClubService } from "../services/club/club.service.js";
 import { ApiResponse, ErrorCode } from "../lib/utils/apiResponse.js";
@@ -75,28 +74,24 @@ export class ClubController {
   }
 
   static async createClub(req: Request, res: Response) {
-    const session = (req as any).session;
-    try {
-      const hasPro = await isUserPro(session.user.id);
-      if (!hasPro) {
-        const ownedCount = await countUserOwnedClubs(session.user.id);
-        if (ownedCount >= FREE_CLUB_OWNERSHIP_LIMIT) {
-          return ApiResponse.forbidden(
-            res,
-            `Free users can own up to ${FREE_CLUB_OWNERSHIP_LIMIT} clubs. Upgrade to Revvie Pro to create more.`,
-            ErrorCode.SUBSCRIPTION_REQUIRED,
-          );
-        }
+    const session = req.session!;
+    const hasPro = await isUserPro(session.user.id);
+    if (!hasPro) {
+      const ownedCount = await countUserOwnedClubs(session.user.id);
+      if (ownedCount >= FREE_CLUB_OWNERSHIP_LIMIT) {
+        return ApiResponse.forbidden(
+          res,
+          `Free users can own up to ${FREE_CLUB_OWNERSHIP_LIMIT} clubs. Upgrade to Revvie Pro to create more.`,
+          ErrorCode.SUBSCRIPTION_REQUIRED,
+        );
       }
-
-      const club = await ClubService.createClub(req.body, session.user.id);
-      import("../services/club/groupChat.service.js").then((m) => {
-        m.ensureAnnouncementsGroup(club.id).catch(console.error);
-      });
-      ApiResponse.created(res, { club }, "Club created successfully");
-    } catch (err: any) {
-      throw err;
     }
+
+    const club = await ClubService.createClub(req.body, session.user.id);
+    import("../services/club/groupChat.service.js").then((m) => {
+      m.ensureAnnouncementsGroup(club.id).catch(console.error);
+    });
+    ApiResponse.created(res, { club }, "Club created successfully");
   }
 
   static async updateClub(req: Request, res: Response) {
@@ -158,7 +153,7 @@ export class ClubController {
     try {
       await ClubService.deleteClub(id);
       ApiResponse.success(res, null, "Club deleted successfully");
-    } catch (err: any) {
+    } catch {
       ApiResponse.error(res, "Failed to delete club", 500);
     }
   }

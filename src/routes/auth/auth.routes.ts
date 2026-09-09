@@ -1035,12 +1035,12 @@ router.delete(
   "/me",
   requireAuth,
   asyncHandler(async (req: Request, res: Response) => {
-    const session = (req as any).session;
-    const userId = session.user.id as string;
+    const session = req.session!;
+    const userId = session.user.id;
 
     try {
       await prisma.user.delete({ where: { id: userId } });
-    } catch (err) {
+    } catch {
       // Surface a real failure rather than pretending the account is gone.
       return ApiResponse.error(
         res,

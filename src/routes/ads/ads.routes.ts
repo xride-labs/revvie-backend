@@ -4,7 +4,6 @@ import prisma from "../../lib/prisma.js";
 import { requireAuth } from "../../config/auth.js";
 import { ApiResponse } from "../../lib/utils/apiResponse.js";
 import {
-  validateBody,
   validateQuery,
   validateParams,
   asyncHandler,

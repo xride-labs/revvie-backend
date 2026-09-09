@@ -1,9 +1,6 @@
-import { Router, type Request, type Response } from "express";
+import { type Request, type Response } from "express";
 import prisma from "../lib/prisma.js";
-import { ApiResponse, ErrorCode } from "../lib/utils/apiResponse.js";
-import { asyncHandler, validateBody } from "../middlewares/validation.js";
-import { requireAuth } from "../config/auth.js";
-import { z } from "zod";
+import { ApiResponse } from "../lib/utils/apiResponse.js";
 export class SavedController {
   static async getLocations(req: Request, res: Response) {
 

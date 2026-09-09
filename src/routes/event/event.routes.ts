@@ -425,7 +425,7 @@ router.post(
     }
 
     // Determine tier & unit price
-    let selectedTier = tierId ? event.ticketTiers.find((t) => t.id === tierId) : event.ticketTiers[0];
+    const selectedTier = tierId ? event.ticketTiers.find((t) => t.id === tierId) : event.ticketTiers[0];
     const unitPrice = selectedTier ? selectedTier.price : (event.price || 0);
 
     if (selectedTier && selectedTier.availableQuantity < quantity) {

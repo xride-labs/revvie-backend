@@ -12,7 +12,6 @@ import {
 } from "../../models/chat.model.js";
 import {
   HydratedParticipant,
-  HydratedConversation,
   CreateConversationInput,
   ConversationListOptions,
 } from "./chat.types.js";
@@ -21,7 +20,7 @@ export class ConversationService {
   static async hydrateParticipants<
     T extends { participants: IParticipant[] | HydratedParticipant[] },
   >(conversations: T[]): Promise<(T & { participants: HydratedParticipant[] })[]> {
-    if (!conversations.length) return conversations as any;
+    if (!conversations.length) return conversations as (T & { participants: HydratedParticipant[] })[];
 
     const ids = new Set<string>();
     for (const c of conversations) {

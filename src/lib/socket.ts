@@ -68,8 +68,6 @@ interface JoinRidePayload {
 
 // ── Track online users (in-memory; Redis-backed in production) ────────────
 const onlineUsers = new Map<string, Set<string>>(); // userId → Set<socketId>
-// Track users subscribed to location updates
-const locationSubscribers = new Map<string, Set<string>>(); // rideId → Set<socketId>
 
 // Track which conversations each user has open right now. Used to suppress
 // push notifications for chat messages they are actively reading — Mirrors

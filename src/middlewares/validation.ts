@@ -1,6 +1,6 @@
 import { Request, Response, NextFunction } from "express";
 import { ZodSchema, ZodError } from "zod";
-import { ApiResponse, ErrorCode } from "../lib/utils/apiResponse.js";
+import { ApiResponse } from "../lib/utils/apiResponse.js";
 
 /**
  * Validation target type

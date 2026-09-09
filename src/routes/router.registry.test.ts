@@ -56,7 +56,7 @@ export function flattenEndpoints(router: RouterLike, prefix = ""): Array<{ path:
     } else if (layer.handle?.stack) {
       let sub = layer.path ? String(layer.path) : "";
       if (!sub && layer.regexp) {
-        const match = layer.regexp.source?.match(/^\^\\\/([a-zA-Z0-9_\-\/]+)/);
+        const match = layer.regexp.source?.match(/^\^\\\/([a-zA-Z0-9_\-/]+)/);
         if (match) sub = "/" + match[1].replace(/\\\//g, "/");
       }
       out.push(...flattenEndpoints(layer.handle, prefix + (sub === "/" ? "" : sub)));

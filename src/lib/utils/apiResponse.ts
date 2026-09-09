@@ -278,7 +278,8 @@ export class ApiResponse {
       typeof safeDetails === "object" &&
       "stack" in safeDetails
     ) {
-      const { stack: _stack, ...rest } = safeDetails;
+      const rest = { ...safeDetails };
+      delete (rest as { stack?: unknown }).stack;
       safeDetails = rest;
     }
 
