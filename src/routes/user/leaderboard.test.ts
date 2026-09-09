@@ -68,7 +68,7 @@ describe("Winnable Leaderboards & Motorcycle XP System", () => {
 
       expect(res.status).toBe(200);
       expect(res.body.data.scope).toBe("club");
-      const ids = res.body.data.leaderboard.map((e: any) => e.id);
+      const ids = (res.body.data.leaderboard as Array<{ id: string }>).map((e) => e.id);
       expect(ids).toContain(owner.user.id);
       expect(ids).toContain(member.user.id);
       expect(ids).not.toContain(outsider.user.id);

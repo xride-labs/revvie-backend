@@ -1,14 +1,28 @@
 import { normalizeEmail, getPhoneVariants } from "../lib/utils/validation.js";
 import { Router, Request, Response } from "express";
+import { Prisma, UserRole } from "@prisma/client";
 import prisma from "../lib/prisma.js";
 import { requireAuth } from "../config/auth.js";
 import { ApiResponse, ErrorCode } from "../lib/utils/apiResponse.js";
 import { requireAdmin } from "../middlewares/rbac.js";
 import { z } from "zod";
 
-function buildUserProfileResponse(user: any) {
-  if (!user) return user;
-  const { password, ...safeUser } = user;
+interface MonthlyLeaderboardUser {
+  id: string;
+  username: string | null;
+  name: string | null;
+  avatar: string | null;
+  location: string | null;
+  xpPoints: number | null;
+  level: number;
+  levelTitle: string;
+  subscriptionTier: string | null;
+  rideStats: { totalDistanceKm: number } | null;
+}
+
+function buildUserProfileResponse<T extends Record<string, unknown>>(user: T | null): Omit<T, "password"> | null {
+  if (!user) return null;
+  const { password, ...safeUser } = user as T & { password?: unknown };
   return safeUser;
 }
 export class UserController {
@@ -33,9 +47,9 @@ export class UserController {
         ? "monthly"
         : "all_time";
 
-    const where: any = {};
+    const where: Prisma.UserWhereInput = {};
     if (scope === "city" && city) {
-      where.location = { contains: city, mode: "insensitive" as const };
+      where.location = { contains: city, mode: "insensitive" };
     } else if (scope === "club" && clubId) {
       where.OR = [
         { clubMemberships: { some: { clubId } } },
@@ -93,7 +107,7 @@ export class UserController {
         },
       });
 
-      const userMap = new Map<string, { user: any; monthlyKm: number; ridesCount: number }>();
+      const userMap = new Map<string, { user: MonthlyLeaderboardUser; monthlyKm: number; ridesCount: number }>();
       for (const p of monthlyParticipations) {
         if (!p.user) continue;
         const km = p.ride.summary?.totalDistanceKm ?? p.ride.effectiveDistanceKm ?? 0;
@@ -165,13 +179,16 @@ export class UserController {
   }
 
   static async getRoot(req: Request, res: Response) {
-
-    const { page, limit, role, search } = req.query as any;
+    const rawQuery = req.query as Record<string, string | string[] | undefined>;
+    const page = parseInt(String(rawQuery.page ?? "1"), 10) || 1;
+    const limit = parseInt(String(rawQuery.limit ?? "20"), 10) || 20;
+    const role = typeof rawQuery.role === "string" ? rawQuery.role : undefined;
+    const search = typeof rawQuery.search === "string" ? rawQuery.search : undefined;
     const skip = (page - 1) * limit;
 
-    const where: any = {};
-    if (role) {
-      where.userRoles = { some: { role } };
+    const where: Prisma.UserWhereInput = {};
+    if (role && Object.values(UserRole).includes(role as UserRole)) {
+      where.userRoles = { some: { role: role as UserRole } };
     }
     if (search) {
       where.OR = [
