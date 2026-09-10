@@ -1,4 +1,5 @@
 import { Request, Response } from "express";
+import prisma from "../lib/prisma.js";
 import { LocationService } from "../services/location/location.service.js";
 import { LocationSettingsService } from "../services/location/settings.service.js";
 import { ApiResponse } from "../lib/utils/apiResponse.js";

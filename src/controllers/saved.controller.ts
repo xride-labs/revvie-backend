@@ -1,6 +1,6 @@
 import { type Request, type Response } from "express";
 import prisma from "../lib/prisma.js";
-import { ApiResponse } from "../lib/utils/apiResponse.js";
+import { ApiResponse, ErrorCode } from "../lib/utils/apiResponse.js";
 export class SavedController {
   static async getLocations(req: Request, res: Response) {
 
