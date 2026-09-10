@@ -60,7 +60,8 @@ export async function sendApitxtOtp(params: SendApitxtOtpParams): Promise<Apitxt
     console.log(`AuthKey Configured: ${!isPlaceholderKey ? "YES" : "NO (Mock fallback)"}`);
     console.log(`==============================================\n`);
 
-    if (isPlaceholderKey || process.env.NODE_ENV === "test") {
+    // In development or test mode, simulate the OTP to server console (unless SEND_REAL_SMS=true)
+    if (isPlaceholderKey || process.env.NODE_ENV === "test" || (process.env.NODE_ENV === "development" && process.env.SEND_REAL_SMS !== "true")) {
       return {
         success: true,
         message: "Development/Test mode: OTP simulated and logged to server console.",

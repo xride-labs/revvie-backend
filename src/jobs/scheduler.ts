@@ -18,11 +18,15 @@ const SELF_PING_TIMEOUT_MS = 10_000;
 // run after tightening retention rules) can't create one huge transaction.
 const RIDE_CLEANUP_BATCH = 100;
 
-// Safety net for rides without a declared duration: never auto-complete a
-// ride that started less than this long ago. Real riders start rides manually
-// and can be out for hours — force-completing a live ride mid-activity is
-// destructive, so anything still inside this window is left alone.
-const MAX_RIDE_ACTIVE_MS = 12 * 60 * 60 * 1000;
+// Safety net for truly abandoned rides: never auto-complete a ride merely
+// because its declared duration elapsed. Duration is an estimate/target;
+// riders frequently run into overtime, pause overnight on multi-day trips,
+// or turn off their phones while taking breaks.
+// Auto-completion is reserved as a safety net / garbage collection for
+// rides abandoned past MAX_RIDE_ABANDONED_MS (14 days) or where no telemetry
+// or updates have been received for over 48 hours.
+const MAX_RIDE_ABANDONED_MS = 14 * 24 * 60 * 60 * 1000; // 14 days
+const INACTIVE_ABANDONED_CUTOFF_MS = 48 * 60 * 60 * 1000; // 48 hours without update
 
 /**
  * Ride cleanup job - runs daily at 2 AM
@@ -224,28 +228,37 @@ export async function updateRideStatuses(): Promise<{
       console.log(`[Ride Status] Started ${updated} rides`);
     }
 
-    // Auto-complete IN_PROGRESS rides whose activity window has fully
-    // elapsed: scheduled start + declared duration, capped at
-    // MAX_RIDE_ACTIVE_MS. Rides started manually by users who are still
-    // riding are inside their window and must NOT be touched —
-    // force-completing a live ride mid-activity loses tracking data.
+    // Auto-complete genuinely abandoned IN_PROGRESS rides:
+    // Rides should NEVER be auto-completed merely because their declared
+    // duration has passed — duration is an estimate, and rides frequently
+    // go into overtime or continue across multi-day excursions.
+    // Rides are only cleaned up if they have exceeded the generous multi-day
+    // trip threshold (14 days or declared duration + 48h) AND have had no
+    // updates/telemetry in the last 48 hours.
     const candidates = await prisma.ride.findMany({
       where: {
         status: "IN_PROGRESS",
         scheduledAt: { not: null },
+        keepPermanently: false,
       },
-      select: { id: true, scheduledAt: true, duration: true },
+      select: { id: true, scheduledAt: true, duration: true, updatedAt: true },
     });
 
     const nowMs = now.getTime();
     const overdue = candidates.filter((ride) => {
-      const plannedEndMs =
-        ride.scheduledAt!.getTime() +
-        (ride.duration != null && ride.duration > 0
-          ? ride.duration * 60_000
-          : MAX_RIDE_ACTIVE_MS);
-      const hardCeilingMs = ride.scheduledAt!.getTime() + MAX_RIDE_ACTIVE_MS;
-      return Math.min(plannedEndMs, hardCeilingMs) < nowMs;
+      // Must have had no activity for at least 48 hours
+      const inactiveMs = nowMs - ride.updatedAt.getTime();
+      if (inactiveMs < INACTIVE_ABANDONED_CUTOFF_MS) {
+        return false;
+      }
+
+      // Hard ceiling: at least 14 days, or planned duration + 48 hours
+      const tripLimitMs = Math.max(
+        MAX_RIDE_ABANDONED_MS,
+        (ride.duration != null && ride.duration > 0 ? ride.duration * 60_000 : 0) + INACTIVE_ABANDONED_CUTOFF_MS,
+      );
+      const hardCeilingMs = ride.scheduledAt!.getTime() + tripLimitMs;
+      return hardCeilingMs < nowMs;
     });
 
     if (overdue.length > 0) {
@@ -259,7 +272,7 @@ export async function updateRideStatuses(): Promise<{
       });
       updated += completedRides.count;
       console.log(
-        `[Ride Status] Auto-completed ${completedRides.count} overdue rides`,
+        `[Ride Status] Auto-completed ${completedRides.count} genuinely abandoned overdue rides`,
       );
     }
 

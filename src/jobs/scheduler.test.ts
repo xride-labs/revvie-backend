@@ -111,14 +111,31 @@ describe("Scheduler Jobs", () => {
       expect(after!.status).toBe("IN_PROGRESS");
     });
 
-    it("auto-completes IN_PROGRESS rides whose declared duration has fully elapsed", async () => {
+    it("does NOT auto-complete an IN_PROGRESS ride merely because its declared duration elapsed (allows overtime & multi-day)", async () => {
       const creator = await createTestUser();
-      // Scheduled 3h ago with a 60-minute planned duration -> long overdue.
+      // Scheduled 3h ago with a 60-minute planned duration -> elapsed > duration, but ride is active!
       const ride = await createTestRide(creator.user.id, {
         status: "IN_PROGRESS",
         scheduledAt: new Date(Date.now() - 180 * MIN_MS),
         duration: 60,
       });
+
+      const result = await updateRideStatuses();
+
+      const after = await prisma.ride.findUnique({ where: { id: ride.id } });
+      expect(after!.status).toBe("IN_PROGRESS");
+      expect(after!.endedReason).toBeNull();
+      void result;
+    });
+
+    it("auto-completes genuinely abandoned rides that exceeded the 14-day window and have been inactive for >48h", async () => {
+      const creator = await createTestUser();
+      const ride = await createTestRide(creator.user.id, {
+        status: "IN_PROGRESS",
+        scheduledAt: new Date(Date.now() - 16 * DAY_MS),
+        duration: 60,
+      });
+      await backdateUpdatedAt(ride.id, 3); // 3 days inactive (>48h)
 
       const result = await updateRideStatuses();
 
