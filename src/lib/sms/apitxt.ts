@@ -17,18 +17,38 @@ export interface ApitxtResponse {
   data?: any;
 }
 
+import parsePhoneNumber from "libphonenumber-js";
+
 /**
  * Normalizes phone numbers to standard numeric format without leading '+'
  * e.g., "+91 98765 43210" -> "919876543210"
+ * e.g., "+1 415 555 2671" -> "14155552671"
+ * e.g., "+44 7911 123456" -> "447911123456"
  * If a 10-digit number without country code is provided, defaults to country code 91.
  */
 export function normalizePhoneNumber(phone: string, defaultCountry = "91"): string {
-  // Remove all non-digits
-  let digits = phone.replace(/\D/g, "");
+  const trimmed = (phone || "").trim();
+  if (!trimmed) return "";
 
-  // If 10 digits (common for Indian mobile numbers without country code), prepend default country code
+  try {
+    if (trimmed.startsWith("+")) {
+      const parsed = parsePhoneNumber(trimmed);
+      if (parsed) {
+        return `${parsed.countryCallingCode}${parsed.nationalNumber}`;
+      }
+    }
+  } catch {
+    // Fallback to manual parsing if libphonenumber-js fails on loose input
+  }
+
+  const digits = trimmed.replace(/\D/g, "");
+  if (trimmed.startsWith("+")) {
+    return digits;
+  }
+
+  // If 10 digits without '+' prefix, fallback to defaultCountry (e.g. 91)
   if (digits.length === 10) {
-    digits = `${defaultCountry}${digits}`;
+    return `${defaultCountry.replace(/\D/g, "")}${digits}`;
   }
 
   return digits;
@@ -70,7 +90,8 @@ export async function sendApitxtOtp(params: SendApitxtOtpParams): Promise<Apitxt
   }
 
   try {
-    const url = new URL(`${baseUrl.replace(/\/+$/, "")}/sendOTP`);
+    const endpointUrl = `${baseUrl.replace(/\/+$/, "")}/sendOTP`;
+    const url = new URL(endpointUrl);
     url.searchParams.set("authkey", authKey);
     url.searchParams.set("mobile", normalizedMobile);
     url.searchParams.set("otp", params.otp);
@@ -79,14 +100,27 @@ export async function sendApitxtOtp(params: SendApitxtOtpParams): Promise<Apitxt
       url.searchParams.set("country", params.country);
     }
 
+    const payload = {
+      authkey: authKey,
+      mobile: normalizedMobile,
+      otp: params.otp,
+      channel: params.channel || "sms",
+      ...(params.country ? { country: params.country } : {}),
+    };
+
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 10000);
 
+    // APITxT requires parameters in JSON body for POST, and query string for GET.
+    // Providing both ensures 100% compatibility and avoids "Missing authkey" errors.
     const response = await fetch(url.toString(), {
       method: "POST",
       headers: {
+        "Content-Type": "application/json",
         Accept: "application/json",
+        authkey: authKey,
       },
+      body: JSON.stringify(payload),
       signal: controller.signal,
     });
 
@@ -100,12 +134,12 @@ export async function sendApitxtOtp(params: SendApitxtOtpParams): Promise<Apitxt
       data = { raw: text };
     }
 
-    // APITxT returns various structures like { type: "success", message: "..." } or { status: "ok" }
+    // APITxT returns various structures like { status: "success", message: "..." } or { status: "ok" }
     const isSuccess =
       response.ok &&
-      (data?.type === "success" ||
+      (data?.status === "success" ||
+        data?.type === "success" ||
         data?.status === "ok" ||
-        data?.status === "success" ||
         data?.success === true ||
         (typeof text === "string" && text.toLowerCase().includes("success")));
 

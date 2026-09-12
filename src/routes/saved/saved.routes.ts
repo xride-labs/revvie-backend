@@ -28,6 +28,7 @@ const createSavedLocationSchema = z.object({
   longitude: z.number().min(-180).max(180),
   type: savedLocationTypeEnum.optional().default("FAVORITE"),
   icon: z.string().max(50).optional().nullable(),
+  listId: z.string().optional().nullable(),
 });
 
 const updateSavedLocationSchema = z.object({
@@ -37,6 +38,7 @@ const updateSavedLocationSchema = z.object({
   longitude: z.number().min(-180).max(180).optional(),
   type: savedLocationTypeEnum.optional(),
   icon: z.string().max(50).optional().nullable(),
+  listId: z.string().optional().nullable(),
 });
 
 /**
@@ -75,6 +77,113 @@ router.patch(
 router.delete(
   "/locations/:id",
   asyncHandler(SavedController.deleteLocationsById)
+);
+
+// ─────────────────────────────────────────────────────────────
+// Saved Lists / Collections (e.g., "Bangalore 1 day trip")
+// ─────────────────────────────────────────────────────────────
+
+const createSavedListSchema = z.object({
+  title: z.string().min(1, "List title is required").max(120),
+  description: z.string().max(500).optional().nullable(),
+  icon: z.string().max(50).optional().default("map-pin"),
+  color: z.string().max(30).optional().default("#8B5CF6"),
+  isPublic: z.boolean().optional().default(false),
+});
+
+const updateSavedListSchema = z.object({
+  title: z.string().min(1).max(120).optional(),
+  description: z.string().max(500).optional().nullable(),
+  icon: z.string().max(50).optional(),
+  color: z.string().max(30).optional(),
+  isPublic: z.boolean().optional(),
+});
+
+const importSavedListSchema = z.object({
+  title: z.string().min(1, "List title is required").max(120),
+  description: z.string().max(500).optional().nullable(),
+  icon: z.string().max(50).optional().default("map-pin"),
+  color: z.string().max(30).optional().default("#10B981"),
+  isPublic: z.boolean().optional().default(false),
+  places: z
+    .array(
+      z.object({
+        name: z.string().min(1, "Place name is required"),
+        address: z.string().optional().default(""),
+        latitude: z.number().min(-90).max(90),
+        longitude: z.number().min(-180).max(180),
+        type: savedLocationTypeEnum.optional().default("VIEWPOINT"),
+        icon: z.string().optional().nullable(),
+      })
+    )
+    .min(1, "At least one place is required"),
+});
+
+/**
+ * GET /api/saved/lists
+ * List all saved place lists for current user
+ */
+router.get("/lists", asyncHandler(SavedController.getLists));
+
+/**
+ * POST /api/saved/lists
+ * Create a new empty list
+ */
+router.post(
+  "/lists",
+  validateBody(createSavedListSchema),
+  asyncHandler(SavedController.postLists)
+);
+
+/**
+ * POST /api/saved/lists/import
+ * Atomically create a new list with multiple places
+ */
+router.post(
+  "/lists/import",
+  validateBody(importSavedListSchema),
+  asyncHandler(SavedController.postImportList)
+);
+
+/**
+ * GET /api/saved/lists/:id
+ * Get a specific list with its saved places
+ */
+router.get("/lists/:id", asyncHandler(SavedController.getListById));
+
+/**
+ * PATCH /api/saved/lists/:id
+ * Update list metadata
+ */
+router.patch(
+  "/lists/:id",
+  validateBody(updateSavedListSchema),
+  asyncHandler(SavedController.patchListById)
+);
+
+/**
+ * DELETE /api/saved/lists/:id
+ * Delete a list and its places
+ */
+router.delete("/lists/:id", asyncHandler(SavedController.deleteListById));
+
+/**
+ * POST /api/saved/lists/:id/places
+ * Add a place directly to a list
+ */
+router.post(
+  "/lists/:id/places",
+  validateBody(createSavedLocationSchema),
+  asyncHandler(SavedController.postPlaceToList)
+);
+
+/**
+ * DELETE /api/saved/lists/:id/places/:placeId
+ * Remove a place from a list
+ */
+router.delete(
+  "/lists/:id/places/:placeId",
+  asyncHandler(SavedController.deletePlaceFromList)
 );
 
 // ─────────────────────────────────────────────────────────────

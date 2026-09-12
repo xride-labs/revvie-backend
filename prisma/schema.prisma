@@ -185,9 +185,10 @@ model User {
   brandInvitesSent  BrandMember[]     @relation("BrandInviter")
   businessInquiries BusinessInquiry[] @relation("InquiriesMade")
 
-  // Saved locations & routes
-  savedLocations SavedLocation[]
-  savedRoutes    SavedRoute[]
+  // Saved locations & routes & custom lists
+  savedLocations  SavedLocation[]
+  savedRoutes     SavedRoute[]
+  savedPlaceLists SavedPlaceList[]
 
   @@map("users")
 }
@@ -2081,6 +2082,7 @@ enum SavedLocationType {
 model SavedLocation {
   id        String            @id @default(cuid())
   userId    String            @map("user_id")
+  listId    String?           @map("list_id")
   name      String
   address   String
   latitude  Float
@@ -2090,10 +2092,30 @@ model SavedLocation {
   createdAt DateTime          @default(now()) @map("created_at")
   updatedAt DateTime          @updatedAt @map("updated_at")
 
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  list SavedPlaceList? @relation(fields: [listId], references: [id], onDelete: Cascade)
 
   @@index([userId], map: "saved_locations_user_idx")
+  @@index([listId], map: "saved_locations_list_idx")
   @@map("saved_locations")
+}
+
+model SavedPlaceList {
+  id          String   @id @default(cuid())
+  userId      String   @map("user_id")
+  title       String
+  description String?
+  icon        String?  @default("map-pin")
+  color       String?  @default("#8B5CF6")
+  isPublic    Boolean  @default(false) @map("is_public")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  user      User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  locations SavedLocation[]
+
+  @@index([userId], map: "saved_place_lists_user_idx")
+  @@map("saved_place_lists")
 }
 
 model SavedRoute {
