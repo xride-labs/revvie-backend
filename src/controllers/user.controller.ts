@@ -2,7 +2,7 @@ import { Request, Response } from "express";
 import { Prisma } from "@prisma/client";
 import prisma from "../lib/prisma.js";
 import { ApiResponse, ErrorCode } from "../lib/utils/apiResponse.js";
-import { UserRole } from "../lib/utils/permissions.js";
+import { UserRole, isAdmin } from "../lib/utils/permissions.js";
 import { normalizeEmail, getPhoneVariants } from "../lib/utils/validation.js";
 
 interface MonthlyLeaderboardUser {
@@ -186,8 +186,8 @@ export class UserController {
     const skip = (page - 1) * limit;
 
     const where: Prisma.UserWhereInput = {};
-    if (role && Object.values(UserRole).includes(role as UserRole)) {
-      where.userRoles = { some: { role: role as UserRole } };
+    if (role) {
+      where.userRoles = { some: { roleRecord: { slug: role.toLowerCase() } } };
     }
     if (search) {
       where.OR = [
@@ -219,7 +219,7 @@ export class UserController {
           levelTitle: true,
           activityLevel: true,
           reputationScore: true,
-          userRoles: { select: { role: true } },
+          userRoles: { select: { roleRecord: true } },
           createdAt: true,
         },
         orderBy: { createdAt: "desc" },
@@ -227,9 +227,9 @@ export class UserController {
       prisma.user.count({ where }),
     ]);
 
-    const usersWithRoles = users.map(({ userRoles, ...u }) => ({
+    const usersWithRoles = users.map(({ userRoles, ...u }: any) => ({
       ...u,
-      roles: userRoles.map((r) => r.role),
+      roles: (userRoles || []).map((r: any) => r.roleRecord?.name || r.roleRecord?.slug),
     }));
 
     ApiResponse.paginated(res, usersWithRoles, {
@@ -374,7 +374,7 @@ export class UserController {
     const user = await prisma.user.findUnique({
       where: { id },
       include: {
-        userRoles: { select: { role: true } },
+        userRoles: { select: { roleRecord: true } },
         bikes: true,
         badges: { include: { badge: true } },
         emergencyContacts: true,
@@ -418,49 +418,66 @@ export class UserController {
     const { id } = req.params;
 
     const isSelf = session.user.id === id;
-    if (!isSelf) {
-      // Check if requester has admin role
-      const adminRole = await prisma.userRoleAssignment.findFirst({
-        where: {
-          userId: session.user.id,
-          role: { in: ["ADMIN"] },
-        },
-      });
+    const isUserAdmin = isAdmin((req as any).userRoles);
 
-      if (!adminRole) {
-        return ApiResponse.forbidden(
-          res,
-          "You don't have permission to update this user",
-        );
-      }
+    if (!isSelf && !isUserAdmin) {
+      return ApiResponse.forbidden(
+        res,
+        "You can only update your own profile",
+        ErrorCode.FORBIDDEN,
+      );
     }
 
     const {
-      email,
-      username,
       name,
+      username,
       bio,
       location,
       bloodType,
+      activityLevel,
       avatar,
       coverImage,
       dob,
       phone,
+      interests,
+      ghostModeEnabled,
+      socialLinks,
+      onboardingCompleted,
     } = req.body;
+
+    if (username) {
+      const existing = await prisma.user.findFirst({
+        where: {
+          username: { equals: username, mode: "insensitive" },
+          NOT: { id },
+        },
+      });
+      if (existing) {
+        return ApiResponse.conflict(
+          res,
+          "Username is already taken",
+          ErrorCode.ALREADY_EXISTS,
+        );
+      }
+    }
 
     const user = await prisma.user.update({
       where: { id },
       data: {
-        ...(email !== undefined && { email }),
-        ...(username !== undefined && { username }),
         ...(name !== undefined && { name }),
+        ...(username !== undefined && { username }),
         ...(bio !== undefined && { bio }),
         ...(location !== undefined && { location }),
         ...(bloodType !== undefined && { bloodType }),
-        ...(avatar !== undefined && { avatar }),
-        ...(coverImage !== undefined && { coverImage }),
-        ...(dob !== undefined && { dob: new Date(dob) }),
+        ...(activityLevel !== undefined && { activityLevel }),
+        ...(avatar !== undefined && { avatar: avatar || null }),
+        ...(coverImage !== undefined && { coverImage: coverImage || null }),
+        ...(dob !== undefined && { dob: dob && !isNaN(Date.parse(dob)) ? new Date(dob) : null }),
         ...(phone !== undefined && { phone }),
+        ...(interests !== undefined && { interests }),
+        ...(ghostModeEnabled !== undefined && { ghostModeEnabled, ghostModeSince: ghostModeEnabled ? new Date() : null }),
+        ...(socialLinks !== undefined && { socialLinks }),
+        ...(onboardingCompleted !== undefined && { onboardingCompleted }),
       },
       select: {
         id: true,
@@ -474,15 +491,21 @@ export class UserController {
         bloodType: true,
         dob: true,
         phone: true,
-        userRoles: { select: { role: true } },
+        interests: true,
+        activityLevel: true,
+        ghostModeEnabled: true,
+        ghostModeSince: true,
+        socialLinks: true,
+        onboardingCompleted: true,
+        userRoles: { select: { roleRecord: true } },
         updatedAt: true,
       },
     });
 
-    const { userRoles: updatedRoles, ...userData } = user;
+    const { userRoles: updatedRoles, ...userData } = user as any;
     ApiResponse.success(
       res,
-      { user: { ...userData, roles: updatedRoles.map((r) => r.role) } },
+      { user: { ...userData, roles: (updatedRoles || []).map((r: any) => r.roleRecord?.name || r.roleRecord?.slug) } },
       "User updated successfully",
     );
   
@@ -500,7 +523,7 @@ export class UserController {
         email: true,
         userRoles: {
           select: {
-            role: true,
+            roleRecord: true,
             assignedAt: true,
           },
           orderBy: { assignedAt: "desc" },
@@ -521,7 +544,10 @@ export class UserController {
         id: user.id,
         name: user.name,
         email: user.email,
-        roles: user.userRoles,
+        roles: (user.userRoles || []).map((ur: any) => ({
+          role: ur.roleRecord?.name || ur.roleRecord?.slug,
+          assignedAt: ur.assignedAt,
+        })),
       },
     });
   
@@ -545,9 +571,22 @@ export class UserController {
       });
     }
 
+    const targetRole = await prisma.role.findFirst({
+      where: {
+        OR: [
+          { slug: role.toLowerCase() },
+          { id: role },
+        ],
+      },
+    });
+
+    if (!targetRole) {
+      return ApiResponse.error(res, "Role not found", 404, ErrorCode.NOT_FOUND);
+    }
+
     // Check if role already exists
     const existingRole = await prisma.userRoleAssignment.findUnique({
-      where: { userId_role: { userId: id, role } },
+      where: { userId_roleId: { userId: id, roleId: targetRole.id } },
     });
 
     if (existingRole) {
@@ -561,7 +600,7 @@ export class UserController {
 
     // Add the role
     await prisma.userRoleAssignment.create({
-      data: { userId: id, role },
+      data: { userId: id, roleId: targetRole.id },
     });
 
     const user = await prisma.user.findUnique({
@@ -570,7 +609,7 @@ export class UserController {
         id: true,
         email: true,
         name: true,
-        userRoles: { select: { role: true, assignedAt: true } },
+        userRoles: { include: { roleRecord: true } },
       },
     });
 
@@ -581,7 +620,7 @@ export class UserController {
           id: user?.id,
           email: user?.email,
           name: user?.name,
-          roles: user?.userRoles || [],
+          roles: user?.userRoles.map((r) => r.roleRecord.slug.toUpperCase()) || [],
         },
       },
       "Role added successfully",
@@ -593,8 +632,21 @@ export class UserController {
 
     const { id, role } = req.params;
 
+    const targetRole = await prisma.role.findFirst({
+      where: {
+        OR: [
+          { slug: role.toLowerCase() },
+          { id: role },
+        ],
+      },
+    });
+
+    if (!targetRole) {
+      return ApiResponse.notFound(res, "Role not found");
+    }
+
     const existingRole = await prisma.userRoleAssignment.findUnique({
-      where: { userId_role: { userId: id, role: role as any } },
+      where: { userId_roleId: { userId: id, roleId: targetRole.id } },
     });
 
     if (!existingRole) {
@@ -602,7 +654,7 @@ export class UserController {
     }
 
     await prisma.userRoleAssignment.delete({
-      where: { userId_role: { userId: id, role: role as any } },
+      where: { userId_roleId: { userId: id, roleId: targetRole.id } },
     });
 
     const user = await prisma.user.findUnique({
@@ -611,7 +663,7 @@ export class UserController {
         id: true,
         email: true,
         name: true,
-        userRoles: { select: { role: true, assignedAt: true } },
+        userRoles: { include: { roleRecord: true } },
       },
     });
 
@@ -622,7 +674,7 @@ export class UserController {
           id: user?.id,
           email: user?.email,
           name: user?.name,
-          roles: user?.userRoles || [],
+          roles: user?.userRoles.map((r) => r.roleRecord.slug.toUpperCase()) || [],
         },
       },
       "Role removed successfully",
@@ -640,7 +692,7 @@ export class UserController {
       const adminRole = await prisma.userRoleAssignment.findFirst({
         where: {
           userId: session.user.id,
-          role: { in: ["ADMIN"] },
+          roleRecord: { slug: { in: ["super_admin", "admin"] } },
         },
       });
 

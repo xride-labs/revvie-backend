@@ -21,9 +21,9 @@ export { UserRole, WEB_ACCESS_ROLES, MOBILE_ACCESS_ROLES };
 export async function getUserRoles(userId: string): Promise<UserRole[]> {
   const assignments = await prisma.userRoleAssignment.findMany({
     where: { userId },
-    select: { role: true },
+    select: { roleRecord: true },
   });
-  return assignments.map((a) => a.role as UserRole);
+  return assignments.map((a) => a.roleRecord.slug.toUpperCase() as UserRole);
 }
 
 // ─── Middleware factories ────────────────────────────────────────────
@@ -126,10 +126,10 @@ export function requireOwnershipOrAdmin(
                 userId: session.user.id,
               },
             },
-            select: { role: true },
+            include: { role: true },
           });
-          isOwner =
-            membership?.role === "ADMIN" || membership?.role === "FOUNDER";
+          const slug = membership?.role?.slug?.toLowerCase();
+          isOwner = slug === "owner" || slug === "founder" || slug === "admin";
         }
         break;
       }
@@ -164,8 +164,69 @@ export function requireOwnershipOrAdmin(
   };
 }
 
+import { RolesService } from "../services/roles.service.js";
+
 /**
- * Require club membership with a minimum role.
+ * Require a specific global permission (e.g. 'system:manage_users', 'rider:create_rides').
+ */
+export function requirePermission(...permissionCodes: string[]) {
+  return async (req: Request, res: Response, next: NextFunction) => {
+    const session = (req as any).session;
+    if (!session?.user) {
+      return ApiResponse.unauthorized(res, "Authentication required");
+    }
+
+    const userPerms = await RolesService.getUserPermissions(session.user.id);
+    const hasPerm = permissionCodes.some((code) => userPerms.includes(code) || userPerms.includes("system:admin"));
+
+    if (!hasPerm) {
+      return ApiResponse.forbidden(
+        res,
+        `This action requires one of the following permissions: ${permissionCodes.join(", ")}`,
+        ErrorCode.INSUFFICIENT_PERMISSIONS,
+      );
+    }
+
+    (req as any).userPermissions = userPerms;
+    next();
+  };
+}
+
+/**
+ * Require a specific club permission (e.g. 'club:view_analytics', 'club:manage_roles').
+ * Checks if user is club founder, holds a custom role with that permission, or is a system admin.
+ */
+export function requireClubPermission(permissionCode: string, clubIdParam: string = "id") {
+  return async (req: Request, res: Response, next: NextFunction) => {
+    const session = (req as any).session;
+    const clubId = req.params[clubIdParam] || req.params.clubId || req.body.clubId;
+
+    if (!session?.user) {
+      return ApiResponse.unauthorized(res, "Authentication required");
+    }
+
+    if (!clubId) {
+      return ApiResponse.error(res, "Club ID is required", 400, ErrorCode.MISSING_REQUIRED_FIELD);
+    }
+
+    const { permissions, role } = await RolesService.getClubPermissions(session.user.id, clubId);
+
+    if (!permissions.includes(permissionCode)) {
+      return ApiResponse.forbidden(
+        res,
+        `You do not have permission (${permissionCode}) to perform this action in this club`,
+        ErrorCode.INSUFFICIENT_PERMISSIONS,
+      );
+    }
+
+    (req as any).clubPermissions = permissions;
+    (req as any).clubCustomRole = role;
+    next();
+  };
+}
+
+/**
+ * Require club membership with a minimum role or equivalent custom permission.
  */
 export function requireClubMembership(
   minRole: "MEMBER" | "OFFICER" | "ADMIN" | "FOUNDER" = "MEMBER",
@@ -175,7 +236,7 @@ export function requireClubMembership(
 
   return async (req: Request, res: Response, next: NextFunction) => {
     const session = (req as any).session;
-    const clubId = req.params[clubIdParam] || req.body.clubId;
+    const clubId = req.params[clubIdParam] || req.params.id || req.body.clubId;
 
     if (!session?.user) {
       return ApiResponse.unauthorized(res, "Authentication required");
@@ -190,14 +251,41 @@ export function requireClubMembership(
       );
     }
 
-    // System admins always pass
-    const userRoles = await getUserRoles(session.user.id);
-    if (isAdmin(userRoles)) return next();
+    // Dynamic Club Permissions check
+    const { permissions, role: customRole } = await RolesService.getClubPermissions(session.user.id, clubId);
 
-    // Check club membership
+    // If requiring ADMIN, check for administrative club permissions or system admin
+    if (minRole === "ADMIN") {
+      if (
+        permissions.includes("system:admin") ||
+        permissions.includes("club:manage_settings") ||
+        permissions.includes("club:manage_roles") ||
+        permissions.includes("club:manage_members")
+      ) {
+        (req as any).clubRole = "ADMIN";
+        (req as any).clubPermissions = permissions;
+        (req as any).clubCustomRole = customRole;
+        return next();
+      }
+    } else if (minRole === "OFFICER") {
+      if (
+        permissions.includes("system:admin") ||
+        permissions.includes("club:view_analytics") ||
+        permissions.includes("club:manage_rides") ||
+        permissions.includes("club:moderate_chat") ||
+        permissions.includes("club:moderate_members")
+      ) {
+        (req as any).clubRole = "OFFICER";
+        (req as any).clubPermissions = permissions;
+        (req as any).clubCustomRole = customRole;
+        return next();
+      }
+    }
+
+    // Check base club membership
     const membership = await prisma.clubMember.findUnique({
       where: { clubId_userId: { clubId, userId: session.user.id } },
-      select: { role: true },
+      include: { role: true },
     });
 
     const club = await prisma.club.findUnique({
@@ -211,7 +299,17 @@ export function requireClubMembership(
       return ApiResponse.forbidden(res, "You are not a member of this club");
     }
 
-    const memberRole = isOwner ? "FOUNDER" : membership?.role || "MEMBER";
+    const memberRoleSlug = isOwner ? "owner" : (membership?.role?.slug?.toLowerCase() || "member");
+    const roleMapping: Record<string, "MEMBER" | "OFFICER" | "ADMIN" | "FOUNDER"> = {
+      owner: "FOUNDER",
+      founder: "FOUNDER",
+      admin: "ADMIN",
+      officer: "OFFICER",
+      ride_captain: "OFFICER",
+      moderator: "OFFICER",
+      member: "MEMBER",
+    };
+    const memberRole = roleMapping[memberRoleSlug] || "MEMBER";
 
     if (roleOrder[memberRole as keyof typeof roleOrder] < roleOrder[minRole]) {
       return ApiResponse.forbidden(
@@ -221,6 +319,8 @@ export function requireClubMembership(
     }
 
     (req as any).clubRole = memberRole;
+    (req as any).clubPermissions = permissions;
+    (req as any).clubCustomRole = customRole;
     next();
   };
 }

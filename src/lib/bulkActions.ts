@@ -64,6 +64,13 @@ export async function processBulkAction(
             select: { id: true, clubId: true, userId: true },
           });
 
+          const defaultMemberRole = await prisma.role.findFirst({
+            where: { slug: "member", scope: "CLUB" },
+          }) || await prisma.role.findFirst({
+            where: { slug: "member" },
+          });
+          const memberRoleId = defaultMemberRole?.id || "role-member";
+
           await prisma.$transaction(async (tx) => {
             await tx.clubJoinRequest.updateMany({
               where: { id: { in: requests.map((r) => r.id) } },
@@ -73,7 +80,7 @@ export async function processBulkAction(
             for (const r of requests) {
               await tx.clubMember.upsert({
                 where: { clubId_userId: { clubId: r.clubId, userId: r.userId } },
-                create: { userId: r.userId, clubId: r.clubId, role: "MEMBER" },
+                create: { userId: r.userId, clubId: r.clubId, roleId: memberRoleId },
                 update: {},
               });
             }
@@ -155,7 +162,7 @@ export async function processBulkAction(
             where: {
               OR: [
                 { ownerId: clubManagerId },
-                { members: { some: { userId: clubManagerId, role: { in: ["ADMIN", "FOUNDER"] } } } },
+                { members: { some: { userId: clubManagerId, role: { slug: { in: ["admin", "owner", "founder"] } } } } },
               ],
             },
             select: { id: true },
@@ -173,6 +180,13 @@ export async function processBulkAction(
           });
 
           if (action === "approve") {
+            const defaultMemberRole = await prisma.role.findFirst({
+              where: { slug: "member", scope: "CLUB" },
+            }) || await prisma.role.findFirst({
+              where: { slug: "member" },
+            });
+            const memberRoleId = defaultMemberRole?.id || "role-member";
+
             await prisma.$transaction(async (tx) => {
               await tx.clubJoinRequest.updateMany({
                 where: { id: { in: requests.map((r) => r.id) } },
@@ -182,7 +196,7 @@ export async function processBulkAction(
               for (const r of requests) {
                 await tx.clubMember.upsert({
                   where: { clubId_userId: { clubId: r.clubId, userId: r.userId } },
-                  create: { userId: r.userId, clubId: r.clubId, role: "MEMBER" },
+                  create: { userId: r.userId, clubId: r.clubId, roleId: memberRoleId },
                   update: {},
                 });
               }

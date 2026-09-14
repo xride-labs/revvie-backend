@@ -248,7 +248,7 @@ export async function countUserActiveListings(userId: string): Promise<number> {
  * separate free-tier lever from FREE_CLUB_OWNERSHIP_LIMIT. */
 export async function countUserJoinedClubs(userId: string): Promise<number> {
   return prisma.clubMember.count({
-    where: { userId, role: { not: "FOUNDER" } },
+    where: { userId, role: { slug: { notIn: ["founder", "owner"] } } },
   });
 }
 

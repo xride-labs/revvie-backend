@@ -2,6 +2,7 @@ import { Router, Request, Response } from "express";
 import jwt from "jsonwebtoken";
 import prisma from "../../lib/prisma.js";
 import { auth, requireAuth } from "../../config/auth.js";
+import { SavedController } from "../../controllers/saved.controller.js";
 import { fromNodeHeaders } from "better-auth/node";
 import { ApiResponse, ErrorCode } from "../../lib/utils/apiResponse.js";
 import { validateBody, asyncHandler } from "../../middlewares/validation.js";
@@ -79,11 +80,17 @@ router.get(
       }
 
       // Ensure RIDER role exists for the user (may be a brand new Google signup)
-      await prisma.userRoleAssignment.upsert({
-        where: { userId_role: { userId: session.user.id, role: "RIDER" } },
-        create: { userId: session.user.id, role: "RIDER" },
-        update: {},
+      const riderRole = await prisma.role.findFirst({
+        where: { slug: "rider", scope: "GLOBAL" },
+        select: { id: true },
       });
+      if (riderRole) {
+        await prisma.userRoleAssignment.upsert({
+          where: { userId_roleId: { userId: session.user.id, roleId: riderRole.id } },
+          create: { userId: session.user.id, roleId: riderRole.id },
+          update: {},
+        });
+      }
 
       const token = session.session.token;
       const userName = encodeURIComponent(session.user.name || "");
@@ -403,13 +410,13 @@ router.get(
     const user = await prisma.user.findUnique({
       where: { id: session.user.id },
       include: {
-        userRoles: { select: { role: true } },
+        userRoles: { include: { roleRecord: true } },
         bikes: true,
         badges: { include: { badge: true } },
         emergencyContacts: true,
         preferences: true,
         rideStats: true,
-        clubMemberships: { include: { club: true } },
+        clubMemberships: { include: { club: true, role: true } },
         _count: {
           select: {
             followers: true,
@@ -429,7 +436,7 @@ router.get(
       );
     }
 
-    const roles = user.userRoles?.map((r) => r.role) ?? [];
+    const roles = user.userRoles?.map((r) => r.roleRecord.slug.toUpperCase()) ?? [];
     const credentialAccount = await prisma.account.findFirst({
       where: { userId: user.id, providerId: "credential" },
       select: { password: true },
@@ -468,6 +475,11 @@ router.get(
       bio: user.bio,
       location: user.location,
       bloodType: user.bloodType,
+      interests: user.interests ?? [],
+      activityLevel: user.activityLevel,
+      ghostModeEnabled: user.ghostModeEnabled,
+      ghostModeSince: user.ghostModeSince,
+      socialLinks: user.socialLinks,
       ridesCompleted: user.rideStats?.totalRides ?? 0,
       createdAt: user.createdAt,
       updatedAt: user.updatedAt,
@@ -501,7 +513,8 @@ router.get(
         user.clubMemberships?.map((membership) => ({
           id: membership.club.id,
           name: membership.club.name,
-          role: membership.role,
+          role: membership.role?.name || "Member",
+          roleId: membership.roleId,
           joinedAt: membership.joinedAt,
           memberCount: membership.club.memberCount,
           logo: membership.club.image,
@@ -689,10 +702,10 @@ router.patch(
           ...(username !== undefined && { username }),
           ...(bio !== undefined && { bio }),
           ...(location !== undefined && { location }),
-          ...(dob !== undefined && { dob: new Date(dob) }),
+          ...(dob !== undefined && { dob: dob && !isNaN(Date.parse(dob)) ? new Date(dob) : null }),
           ...(bloodType !== undefined && { bloodType }),
-          ...(avatar !== undefined && { avatar }),
-          ...(coverImage !== undefined && { coverImage }),
+          ...(avatar !== undefined && { avatar: avatar || null }),
+          ...(coverImage !== undefined && { coverImage: coverImage || null }),
           ...(interests !== undefined && { interests }),
           ...(activityLevel !== undefined && { activityLevel }),
           ...(level !== undefined && { level }),
@@ -713,6 +726,11 @@ router.patch(
           location: true,
           bloodType: true,
           dob: true,
+          interests: true,
+          activityLevel: true,
+          ghostModeEnabled: true,
+          ghostModeSince: true,
+          socialLinks: true,
           updatedAt: true,
         },
       });
@@ -1146,31 +1164,43 @@ phoneAuthRouter.post(
       let user = await prisma.user.findFirst({
         where: { phone: result.normalizedPhone },
         include: {
-          userRoles: { select: { role: true } },
+          userRoles: { include: { roleRecord: true } },
         },
       });
 
       // If user doesn't exist, create account with phone
       if (!user) {
+        let riderRole = await prisma.role.findFirst({
+          where: { slug: "rider", scope: "GLOBAL" },
+          select: { id: true },
+        });
+        if (!riderRole) {
+          riderRole = await prisma.role.create({
+            data: { name: "Active Rider", slug: "rider", scope: "GLOBAL", isSystem: true, color: "#64748B" },
+            select: { id: true },
+          });
+        }
+
         user = await prisma.user.create({
           data: {
             phone: result.normalizedPhone,
             phoneVerified: true,
             name: `Rider ${result.normalizedPhone.slice(-4)}`,
             userRoles: {
-              create: { role: "RIDER" },
+              create: { roleId: riderRole.id },
             },
           },
           include: {
-            userRoles: { select: { role: true } },
+            userRoles: { include: { roleRecord: true } },
           },
         });
+        await SavedController.ensureDefaultLists(user.id);
       } else if (!user.phoneVerified) {
         user = await prisma.user.update({
           where: { id: user.id },
           data: { phoneVerified: true },
           include: {
-            userRoles: { select: { role: true } },
+            userRoles: { include: { roleRecord: true } },
           },
         });
       }
@@ -1189,7 +1219,7 @@ phoneAuthRouter.post(
         },
       });
 
-      const roles = user.userRoles.map((r) => r.role);
+      const roles = user.userRoles.map((r) => r.roleRecord.slug.toUpperCase());
 
       devLog("[AUTH] Public phone login success", { userId: user.id, phone: result.normalizedPhone });
 

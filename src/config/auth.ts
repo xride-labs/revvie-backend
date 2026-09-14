@@ -172,10 +172,16 @@ export const auth = betterAuth({
         after: async (user) => {
           // Auto-assign RIDER role on signup
           try {
-            await prisma.userRoleAssignment.create({
-              data: { userId: user.id, role: "RIDER" },
+            const riderRole = await prisma.role.findFirst({
+              where: { slug: "rider", scope: "GLOBAL" },
+              select: { id: true },
             });
-            console.log(`[AUTH] RIDER role assigned to ${user.id}`);
+            if (riderRole) {
+              await prisma.userRoleAssignment.create({
+                data: { userId: user.id, roleId: riderRole.id },
+              });
+              console.log(`[AUTH] RIDER role assigned to ${user.id}`);
+            }
           } catch (error) {
             console.warn(`[AUTH] Failed to assign RIDER role:`, error);
           }
@@ -431,10 +437,10 @@ export async function requireAuth(
     // Get user roles from database
     const assignments = await prisma.userRoleAssignment.findMany({
       where: { userId: session.user.id },
-      select: { role: true },
+      include: { roleRecord: true },
     });
 
-    const roles = assignments.map((a) => a.role);
+    const roles = assignments.map((a) => a.roleRecord.slug.toUpperCase());
 
     // Attach session to request
     req.session = {
@@ -487,10 +493,10 @@ export async function optionalAuth(
     if (session?.user) {
       const assignments = await prisma.userRoleAssignment.findMany({
         where: { userId: session.user.id },
-        select: { role: true },
+        include: { roleRecord: true },
       });
 
-      const roles = assignments.map((a) => a.role);
+      const roles = assignments.map((a) => a.roleRecord.slug.toUpperCase());
 
       req.session = {
         user: {

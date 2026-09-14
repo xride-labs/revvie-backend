@@ -98,13 +98,11 @@ export const updateProfileSchema = z.object({
   username: z.string().min(2).max(50).optional(),
   bio: z.string().max(500).optional(),
   location: z.string().max(200).optional(),
-  dob: z.string().datetime().optional(),
-  bloodType: z
-    .enum(["A+", "A-", "B+", "B-", "AB+", "AB-", "O+", "O-"])
-    .optional(),
-  avatar: z.string().url("Invalid avatar URL").optional(),
-  coverImage: z.string().url("Invalid cover image URL").optional(),
-  socialLinks: z.record(z.string(), z.string().url("Invalid URL")).optional(),
+  dob: z.string().optional(),
+  bloodType: z.string().max(10).optional(),
+  avatar: z.string().optional().nullable(),
+  coverImage: z.string().optional().nullable(),
+  socialLinks: z.record(z.string(), z.string()).optional().nullable(),
   ghostModeEnabled: z.boolean().optional(),
   interests: z.array(z.string()).optional(),
   activityLevel: z.enum(["Casual", "Regular", "Enthusiast", "Pro"]).optional(),
@@ -274,9 +272,14 @@ export const clubQuerySchema = paginationSchema.extend({
   search: z.string().optional(),
 });
 
-export const updateMemberRoleSchema = z.object({
-  role: z.enum(["MEMBER", "OFFICER", "ADMIN"]),
-});
+export const updateMemberRoleSchema = z
+  .object({
+    role: z.string().optional(),
+    roleId: z.string().optional(),
+  })
+  .refine((data) => Boolean(data.role || data.roleId), {
+    message: "Either role or roleId is required",
+  });
 
 // ========================================
 // Marketplace Schemas

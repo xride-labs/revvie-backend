@@ -8,6 +8,7 @@ import { ApiResponse, ErrorCode } from "../../lib/utils/apiResponse.js";
 import { requireClubCreationEnabled } from "../../middlewares/appSettings.js";
 import {
     requireClubMembership,
+    requireClubPermission,
     requireOwnershipOrAdmin,
 } from "../../middlewares/rbac.js";
 import {
@@ -534,13 +535,14 @@ router.delete(
 
     const membership = await prisma.clubMember.findUnique({
       where: { clubId_userId: { clubId: id, userId: session.user.id } },
+      include: { role: true },
     });
 
     if (!membership) {
       return ApiResponse.notFound(res, "You are not a member of this club");
     }
 
-    if (membership.role === "FOUNDER") {
+    if (membership.role.slug === "owner" || membership.role.slug === "founder") {
       return ApiResponse.error(
         res,
         "Club founders cannot leave. Transfer ownership or delete the club.",
@@ -606,8 +608,9 @@ router.get(
         user: {
           select: { id: true, name: true, avatar: true, email: true },
         },
+        role: true,
       },
-      orderBy: [{ role: "asc" }, { joinedAt: "asc" }],
+      orderBy: [{ joinedAt: "asc" }],
       skip,
       take: limit + 1,
     });
@@ -619,7 +622,9 @@ router.get(
       members: resultMembers.map((m) => ({
         userId: m.userId,
         user: m.user,
-        role: m.role,
+        role: m.role.name || m.role.slug,
+        roleId: m.roleId,
+        roleDetails: m.role,
         joinedAt: m.joinedAt,
         status: effectiveStatus(m),
         lastInteractionAt: m.lastInteractionAt,
@@ -700,12 +705,19 @@ router.post(
       data: { status: "APPROVED" },
     });
 
+    const defaultMemberRole = await prisma.role.findFirst({
+      where: { slug: "member", scope: "CLUB" },
+    }) || await prisma.role.findFirst({
+      where: { slug: "member" },
+    });
+    const memberRoleId = defaultMemberRole?.id || "role-member";
+
     // Add user as a member
     await prisma.clubMember.create({
       data: {
         clubId: id,
         userId,
-        role: "MEMBER",
+        roleId: memberRoleId,
       },
     });
 
@@ -873,19 +885,37 @@ router.patch(
   requireClubMembership("ADMIN", "id"),
   asyncHandler(async (req: Request, res: Response) => {
     const { id, userId } = req.params;
-    const { role } = req.body;
+    const { role, roleId } = req.body;
+
+    let targetRoleId = roleId;
+    if (!targetRoleId && role) {
+      const targetRole = await prisma.role.findFirst({
+        where: {
+          OR: [
+            { slug: role.toLowerCase() },
+            { name: { equals: role, mode: "insensitive" } },
+          ],
+        },
+      });
+      targetRoleId = targetRole?.id;
+    }
+
+    if (!targetRoleId) {
+      return ApiResponse.badRequest(res, "Invalid role specified");
+    }
 
     const membership = await prisma.clubMember.update({
       where: { clubId_userId: { clubId: id, userId } },
-      data: { role },
+      data: { roleId: targetRoleId },
       include: {
         user: {
           select: { id: true, name: true, avatar: true },
         },
+        role: true,
       },
     });
 
-    ApiResponse.success(res, { membership }, `Member role updated to ${role}`);
+    ApiResponse.success(res, { membership }, `Member role updated to ${membership.role.name}`);
   }),
 );
 
@@ -943,13 +973,14 @@ router.delete(
 
     const membership = await prisma.clubMember.findUnique({
       where: { clubId_userId: { clubId: id, userId } },
+      include: { role: true },
     });
 
     if (!membership) {
       return ApiResponse.notFound(res, "Member not found");
     }
 
-    if (membership.role === "FOUNDER") {
+    if (membership.role.slug === "owner" || membership.role.slug === "founder") {
       return ApiResponse.forbidden(res, "Cannot remove the club founder");
     }
 
@@ -1041,81 +1072,297 @@ router.get(
 );
 
 /**
- * Club-admin analytics: per-member activity (last interaction, last message,
- * message volume, moderation status) + community aggregates. ADMIN/FOUNDER
- * only — surfaced in the web club dashboard.
+/**
+ * Massive Club-admin analytics: comprehensive ride telemetry, distance covered,
+ * saddle hours, member growth trajectory, peak riding days/hours heatmap,
+ * top riders leaderboard, community metrics, and period filtering (7D/30D/90D/1Y/ALL).
+ * Gated by club:view_analytics permission.
  */
 router.get(
   "/:id/analytics",
   validateParams(idParamSchema),
-  requireClubMembership("ADMIN", "id"),
+  requireClubPermission("club:view_analytics", "id"),
   asyncHandler(async (req: Request, res: Response) => {
     const { id } = req.params;
+    const period = (req.query.period as string) || "30d";
 
-    const [members, groupCount, club] = await Promise.all([
+    const DAY = 24 * 60 * 60 * 1000;
+    const now = Date.now();
+    let periodDays = 30;
+    if (period === "7d") periodDays = 7;
+    else if (period === "90d") periodDays = 90;
+    else if (period === "1y") periodDays = 365;
+    else if (period === "all") periodDays = 1825; // 5 years
+
+    const startDate = new Date(now - periodDays * DAY);
+
+    const [members, groupCount, club, rides, events] = await Promise.all([
       prisma.clubMember.findMany({
         where: { clubId: id },
         include: {
           user: {
-            select: { id: true, name: true, avatar: true, email: true },
+            select: { id: true, name: true, avatar: true, email: true, username: true },
+          },
+          role: {
+            select: { id: true, name: true, slug: true, color: true, icon: true },
           },
         },
-        orderBy: { lastInteractionAt: "desc" },
+        orderBy: { joinedAt: "desc" },
       }),
       prisma.friendGroup.count({ where: { clubId: id } }),
       prisma.club.findUnique({
         where: { id },
-        select: { name: true, memberCount: true, createdAt: true },
+        select: { id: true, name: true, memberCount: true, createdAt: true, verified: true, location: true },
+      }),
+      prisma.ride.findMany({
+        where: { clubId: id },
+        include: {
+          summary: true,
+          participants: { select: { userId: true, status: true } },
+        },
+        orderBy: { scheduledAt: "desc" },
+      }),
+      prisma.event.findMany({
+        where: { clubId: id },
+        include: {
+          orders: { select: { totalAmount: true, paymentStatus: true } },
+          tickets: { select: { id: true, status: true } },
+        },
       }),
     ]);
 
-    const now = Date.now();
-    const DAY = 24 * 60 * 60 * 1000;
     const memberRows = members.map((m) => ({
       userId: m.userId,
       user: m.user,
-      role: m.role,
+      role: m.role.name || m.role.slug,
+      customRole: m.role,
       status: effectiveStatus(m),
       joinedAt: m.joinedAt,
       lastInteractionAt: m.lastInteractionAt,
       lastMessageAt: m.lastMessageAt,
-      messageCount: m.messageCount,
+      messageCount: m.messageCount || 0,
     }));
 
-    const activeWeek = memberRows.filter(
-      (m) =>
-        m.lastInteractionAt &&
-        now - new Date(m.lastInteractionAt).getTime() < 7 * DAY,
-    ).length;
-    const activeToday = memberRows.filter(
-      (m) =>
-        m.lastInteractionAt &&
-        now - new Date(m.lastInteractionAt).getTime() < DAY,
-    ).length;
-    const dormant = memberRows.filter(
-      (m) =>
-        !m.lastInteractionAt ||
-        now - new Date(m.lastInteractionAt).getTime() > 30 * DAY,
-    ).length;
-    const totalMessages = memberRows.reduce(
-      (a, m) => a + (m.messageCount || 0),
-      0,
-    );
+    // Period-filtered members
+    const newMembersInPeriod = memberRows.filter((m) => new Date(m.joinedAt).getTime() >= startDate.getTime()).length;
+    const activeToday = memberRows.filter((m) => m.lastInteractionAt && now - new Date(m.lastInteractionAt).getTime() < DAY).length;
+    const activeWeek = memberRows.filter((m) => m.lastInteractionAt && now - new Date(m.lastInteractionAt).getTime() < 7 * DAY).length;
+    const activeMonth = memberRows.filter((m) => m.lastInteractionAt && now - new Date(m.lastInteractionAt).getTime() < 30 * DAY).length;
+    const dormant = memberRows.filter((m) => !m.lastInteractionAt || now - new Date(m.lastInteractionAt).getTime() > 30 * DAY).length;
+    const totalMessages = memberRows.reduce((acc, m) => acc + (m.messageCount || 0), 0);
+
+    // Ride telemetry and stats
+    const ridesInPeriod = rides.filter((r) => !r.scheduledAt || new Date(r.scheduledAt).getTime() >= startDate.getTime());
+    const totalRides = ridesInPeriod.length;
+    const completedRidesList = ridesInPeriod.filter((r) => r.status === "COMPLETED");
+    const completedRides = completedRidesList.length;
+    const plannedRides = ridesInPeriod.filter((r) => r.status === "PLANNED").length;
+    const inProgressRides = ridesInPeriod.filter((r) => r.status === "IN_PROGRESS").length;
+    const cancelledRides = ridesInPeriod.filter((r) => r.status === "CANCELLED").length;
+    const completionRate = totalRides > 0 ? Math.round((completedRides / totalRides) * 100) : 0;
+
+    // Total distance (km) and saddle hours
+    let totalDistanceKm = 0;
+    let totalMovingSeconds = 0;
+    for (const r of ridesInPeriod) {
+      if (r.summary?.totalDistanceKm) {
+        totalDistanceKm += r.summary.totalDistanceKm;
+      } else if (r.distance) {
+        totalDistanceKm += r.distance;
+      }
+      if (r.summary?.movingTimeSec) {
+        totalMovingSeconds += r.summary.movingTimeSec;
+      } else if (r.duration) {
+        totalMovingSeconds += r.duration * 60;
+      }
+    }
+    const totalSaddleHours = Math.round((totalMovingSeconds / 3600) * 10) / 10;
+    totalDistanceKm = Math.round(totalDistanceKm * 10) / 10;
+
+    // Average participants per completed ride
+    const avgParticipants = completedRides > 0
+      ? Math.round((completedRidesList.reduce((acc, r) => acc + r.participants.length, 0) / completedRides) * 10) / 10
+      : (totalRides > 0 ? Math.round((ridesInPeriod.reduce((acc, r) => acc + r.participants.length, 0) / totalRides) * 10) / 10 : 0);
+
+    // Peak Riding Days calculation (0 = Sun, 1 = Mon, ..., 6 = Sat)
+    const dayNames = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+    const dayCounts = [0, 0, 0, 0, 0, 0, 0];
+    for (const r of ridesInPeriod) {
+      const d = r.scheduledAt ? new Date(r.scheduledAt).getDay() : new Date(r.createdAt).getDay();
+      dayCounts[d]++;
+    }
+    const maxDayCount = Math.max(...dayCounts, 1);
+    const peakRidingDays = dayNames.map((day, idx) => ({
+      day,
+      count: dayCounts[idx],
+      isPeak: dayCounts[idx] === maxDayCount && dayCounts[idx] > 0,
+    }));
+
+    // Peak Riding Hours (0-23)
+    const hourCounts = new Array(24).fill(0);
+    for (const r of ridesInPeriod) {
+      const h = r.scheduledAt ? new Date(r.scheduledAt).getHours() : new Date(r.createdAt).getHours();
+      hourCounts[h]++;
+    }
+    const peakRidingHours = hourCounts.map((count, hour) => ({
+      hour,
+      label: hour === 0 ? "12 AM" : hour < 12 ? `${hour} AM` : hour === 12 ? "12 PM" : `${hour - 12} PM`,
+      count,
+    }));
+
+    // Growth Timeline (Bucket by interval)
+    const numBuckets = periodDays <= 7 ? 7 : periodDays <= 30 ? 15 : 12;
+    const bucketIntervalMs = (periodDays * DAY) / numBuckets;
+    const growthTimeline: Array<{ date: string; label: string; newMembers: number; cumulative: number }> = [];
+
+    let runningCumulative = memberRows.filter((m) => new Date(m.joinedAt).getTime() < startDate.getTime()).length;
+
+    for (let i = 0; i < numBuckets; i++) {
+      const bucketStart = new Date(startDate.getTime() + i * bucketIntervalMs);
+      const bucketEnd = new Date(startDate.getTime() + (i + 1) * bucketIntervalMs);
+      const added = memberRows.filter(
+        (m) => new Date(m.joinedAt) >= bucketStart && new Date(m.joinedAt) < bucketEnd
+      ).length;
+      runningCumulative += added;
+
+      const label = `${bucketStart.getMonth() + 1}/${bucketStart.getDate()}`;
+      growthTimeline.push({
+        date: bucketStart.toISOString().split("T")[0],
+        label,
+        newMembers: added,
+        cumulative: runningCumulative,
+      });
+    }
+
+    // Top Riders Leaderboard
+    const riderParticipationMap = new Map<string, { ridesJoined: number; totalKm: number }>();
+    for (const r of rides) {
+      const rideDist = r.summary?.totalDistanceKm || r.distance || 0;
+      for (const p of r.participants) {
+        const cur = riderParticipationMap.get(p.userId) || { ridesJoined: 0, totalKm: 0 };
+        cur.ridesJoined++;
+        cur.totalKm += rideDist;
+        riderParticipationMap.set(p.userId, cur);
+      }
+    }
+
+    const leaderboard = memberRows
+      .map((m) => {
+        const stats = riderParticipationMap.get(m.userId) || { ridesJoined: 0, totalKm: 0 };
+        const score = stats.ridesJoined * 10 + Math.round(stats.totalKm * 0.1) + m.messageCount;
+        return {
+          userId: m.userId,
+          name: m.user?.name || m.user?.username || "Rider",
+          avatar: m.user?.avatar || null,
+          role: m.customRole?.name || m.role,
+          roleColor: m.customRole?.color || (m.role === "FOUNDER" ? "#F59E0B" : m.role === "ADMIN" ? "#3B82F6" : "#64748B"),
+          ridesJoined: stats.ridesJoined,
+          totalKm: Math.round(stats.totalKm),
+          messageCount: m.messageCount,
+          score,
+        };
+      })
+      .sort((a, b) => b.score - a.score)
+      .slice(0, 10);
+
+    // Events summary
+    const totalEvents = events.length;
+    let totalTicketsSold = 0;
+    let eventRevenue = 0;
+    for (const ev of events) {
+      totalTicketsSold += ev.tickets.length;
+      for (const order of ev.orders) {
+        if (order.paymentStatus === "COMPLETED") {
+          eventRevenue += order.totalAmount;
+        }
+      }
+    }
 
     ApiResponse.success(res, {
-      club: { name: club?.name, memberCount: club?.memberCount },
+      club: {
+        id: club?.id,
+        name: club?.name,
+        memberCount: memberRows.length,
+        createdAt: club?.createdAt,
+        location: club?.location,
+      },
+      period,
       summary: {
         totalMembers: memberRows.length,
+        newMembersInPeriod,
+        growthRate: memberRows.length > 0 ? Math.round((newMembersInPeriod / Math.max(1, memberRows.length - newMembersInPeriod)) * 100) : 0,
         activeToday,
         activeWeek,
+        activeMonth,
         dormant,
+        retentionRate: memberRows.length > 0 ? Math.round(((memberRows.length - dormant) / memberRows.length) * 100) : 100,
+        totalClubDistanceKm: totalDistanceKm,
+        totalSaddleHours,
+        totalRides,
+        completedRides,
+        completionRate,
+        avgParticipantsPerRide: avgParticipants,
         totalMessages,
         groupCount,
         moderated: memberRows.filter((m) => m.status !== "ACTIVE").length,
       },
+      ridesBreakdown: {
+        total: totalRides,
+        completed: completedRides,
+        planned: plannedRides,
+        inProgress: inProgressRides,
+        cancelled: cancelledRides,
+        completionRate,
+      },
+      peakRidingDays,
+      peakRidingHours,
+      growthTimeline,
+      leaderboard,
+      eventsSummary: {
+        totalEvents,
+        totalTicketsSold,
+        revenue: Math.round(eventRevenue),
+      },
       members: memberRows,
     });
   }),
+);
+
+// ── Custom Roles & Permissions Endpoints ──
+router.get("/:id/roles", validateParams(idParamSchema), asyncHandler(ClubController.getClubRoles));
+router.get("/:id/roles/permissions", asyncHandler(ClubController.getClubPermissions));
+router.post(
+  "/:id/roles",
+  validateParams(idParamSchema),
+  requireClubPermission("club:manage_roles", "id"),
+  asyncHandler(ClubController.createClubRole),
+);
+router.patch(
+  "/:id/roles/:roleId",
+  validateParams(idParamSchema.extend({ roleId: z.string() })),
+  requireClubPermission("club:manage_roles", "id"),
+  asyncHandler(ClubController.updateClubRole),
+);
+router.delete(
+  "/:id/roles/:roleId",
+  validateParams(idParamSchema.extend({ roleId: z.string() })),
+  requireClubPermission("club:manage_roles", "id"),
+  asyncHandler(ClubController.deleteClubRole),
+);
+router.post(
+  "/:id/members/:userId/role",
+  validateParams(idParamSchema.extend({ userId: z.string() })),
+  requireClubPermission("club:manage_roles", "id"),
+  asyncHandler(ClubController.assignClubMemberRole),
+);
+
+// ── Join Flow Configuration Endpoints ──
+router.get("/:id/join-flow", validateParams(idParamSchema), asyncHandler(ClubController.getJoinFlow));
+router.patch(
+  "/:id/join-flow",
+  validateParams(idParamSchema),
+  requireClubPermission("club:manage_settings", "id"),
+  asyncHandler(ClubController.updateJoinFlow),
 );
 
 async function canManageClubGroup(
@@ -1149,10 +1396,11 @@ async function canManageClubGroup(
         userId,
       },
     },
-    select: { role: true },
+    include: { role: true },
   });
 
-  return clubMembership?.role === "ADMIN" || clubMembership?.role === "FOUNDER";
+  const slug = clubMembership?.role?.slug?.toLowerCase();
+  return slug === "admin" || slug === "owner" || slug === "founder";
 }
 
 router.get(

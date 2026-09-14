@@ -5,6 +5,7 @@ import prisma from "../../lib/prisma.js";
 import {
   createTestUser,
   createTestClub,
+  addUserToClub,
   cleanupTestData,
 } from "../../test/utils.js";
 import { awardDistanceXp, levelForXp, evaluateAndAwardRideBadges } from "../../lib/xp.js";
@@ -54,13 +55,7 @@ describe("Winnable Leaderboards & Motorcycle XP System", () => {
       const member = await createTestUser({ xpPoints: 300 });
       const outsider = await createTestUser({ xpPoints: 999 });
       const club = await createTestClub(owner.user.id);
-      await prisma.clubMember.create({
-        data: {
-          userId: member.user.id,
-          clubId: club.id,
-          role: "MEMBER",
-        },
-      });
+      await addUserToClub(member.user.id, club.id);
 
       const res = await request(app)
         .get(`/api/users/leaderboard?scope=club&clubId=${club.id}`)

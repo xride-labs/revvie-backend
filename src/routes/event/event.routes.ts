@@ -322,13 +322,16 @@ router.post(
     if (data.clubId) {
       const clubMember = await prisma.clubMember.findUnique({
         where: { clubId_userId: { clubId: data.clubId, userId } },
+        include: { role: true },
       });
       const club = await prisma.club.findUnique({ where: { id: data.clubId } });
+      const roleSlug = clubMember?.role?.slug?.toLowerCase();
+      const isOfficerOrHigher = roleSlug && ["owner", "founder", "admin", "officer", "ride_captain", "moderator"].includes(roleSlug);
 
       if (
         !club ||
         (club.ownerId !== userId &&
-          clubMember?.role !== "OFFICER" &&
+          !isOfficerOrHigher &&
           !isStaff(req.session?.user?.roles))
       ) {
         return ApiResponse.forbidden(
@@ -579,7 +582,11 @@ router.post(
     if (!isStaffOrHost) {
       const isClubOfficer = event.clubId
         ? await prisma.clubMember.findFirst({
-            where: { clubId: event.clubId, userId: scannerUserId, role: "OFFICER" },
+            where: {
+              clubId: event.clubId,
+              userId: scannerUserId,
+              role: { slug: { in: ["officer", "admin", "owner", "founder", "ride_captain", "moderator"] } },
+            },
           })
         : false;
 
@@ -738,7 +745,11 @@ router.put(
 
     const isClubOfficer = event.clubId
       ? await prisma.clubMember.findFirst({
-          where: { clubId: event.clubId, userId, role: "OFFICER" },
+          where: {
+            clubId: event.clubId,
+            userId,
+            role: { slug: { in: ["officer", "admin", "owner", "founder", "ride_captain", "moderator"] } },
+          },
         })
       : false;
 

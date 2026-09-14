@@ -118,11 +118,12 @@ export class FeedController {
     if (isAnnouncement && clubId) {
       const member = await prisma.clubMember.findUnique({
         where: { clubId_userId: { clubId, userId: session.user.id } },
-        select: { role: true },
+        include: { role: true },
       });
       const club = await prisma.club.findUnique({ where: { id: clubId }, select: { ownerId: true } });
+      const roleSlug = member?.role?.slug?.toLowerCase();
       const isClubAdmin = club?.ownerId === session.user.id ||
-        (member && ["ADMIN", "OFFICER", "FOUNDER"].includes(member.role));
+        (roleSlug && ["admin", "officer", "ride_captain", "moderator", "owner", "founder"].includes(roleSlug));
       if (!isClubAdmin) {
         return ApiResponse.forbidden(res, "Only club admins can post announcements");
       }

@@ -2,6 +2,7 @@ import prisma from "../../lib/prisma.js";
 import { effectiveStatus } from "./moderation.service.js";
 import { ensureAnnouncementsGroup, getGroupChatSummaries } from "./groupChat.service.js";
 import { isUserPro, countUserJoinedClubs, FREE_CLUBS_JOINED_LIMIT } from "../../lib/subscription.js";
+import { RolesService } from "../roles.service.js";
 
 export class ClubService {
   /**
@@ -63,6 +64,7 @@ export class ClubService {
     const memberships = await prisma.clubMember.findMany({
       where: { userId, club: clubSearch },
       include: {
+        role: true,
         club: {
           include: {
             owner: { select: { id: true, name: true, avatar: true } },
@@ -84,7 +86,8 @@ export class ClubService {
     const allClubs = [
       ...memberships.map((m) => ({
         ...m.club,
-        role: m.role,
+        role: m.role.name || m.role.slug,
+        roleDetails: m.role,
         memberCount: m.club._count.members,
       })),
       ...ownedClubs.map((c) => ({
@@ -280,11 +283,17 @@ export class ClubService {
       }
     }
 
+    const { permissions: viewerPermissions, role: viewerCustomRole } = userId
+      ? await RolesService.getClubPermissions(userId, id)
+      : { permissions: [], role: null };
+
     return {
       ...club,
       isMember,
       isOwner,
       viewerRole,
+      viewerPermissions,
+      viewerCustomRole,
       joinRequestStatus: joinRequest?.status || null,
       pendingRequestCount,
       rideCount,
@@ -434,15 +443,22 @@ export class ClubService {
       },
     });
 
+    let ownerRole = await prisma.role.findFirst({
+      where: { scope: "CLUB", slug: { in: ["owner", "founder"] } },
+      select: { id: true },
+    });
+    if (!ownerRole) {
+      ownerRole = await prisma.role.create({
+        data: { name: "Founder / Owner", slug: "owner", scope: "CLUB", isSystem: true, color: "#F59E0B" },
+        select: { id: true },
+      });
+    }
+
     await prisma.clubMember.create({
-      data: { clubId: club.id, userId: ownerId, role: "FOUNDER" },
+      data: { clubId: club.id, userId: ownerId, roleId: ownerRole.id },
     });
 
-    await prisma.userRoleAssignment.upsert({
-      where: { userId_role: { userId: ownerId, role: "CLUB_OWNER" } },
-      create: { userId: ownerId, role: "CLUB_OWNER" },
-      update: {},
-    });
+    await RolesService.assignRoleToUser(ownerId, "club_owner").catch(() => {});
 
     return club;
   }
@@ -454,7 +470,7 @@ export class ClubService {
     });
   }
 
-  static async joinClub(id: string, userId: string, message?: string) {
+  static async joinClub(id: string, userId: string, message?: string, answers?: any) {
     const club = await prisma.club.findUnique({
       where: { id },
       include: { owner: { select: { id: true, name: true, email: true } } },
@@ -477,7 +493,13 @@ export class ClubService {
       if (joinedCount >= FREE_CLUBS_JOINED_LIMIT) throw new Error("JOIN_LIMIT_REACHED");
     }
 
-    if (!club.isPublic) {
+    if (club.joinPolicy === "INVITE_ONLY") {
+      throw new Error("INVITE_ONLY");
+    }
+
+    const requiresApplication = !club.isPublic || club.joinPolicy === "APPLICATION";
+
+    if (requiresApplication) {
       const existingRequest = await prisma.clubJoinRequest.findUnique({
         where: { clubId_userId: { clubId: id, userId } },
       });
@@ -486,16 +508,40 @@ export class ClubService {
 
       const joinRequest = await prisma.clubJoinRequest.upsert({
         where: { clubId_userId: { clubId: id, userId } },
-        create: { clubId: id, userId, message: message || null, status: "PENDING" },
-        update: { status: "PENDING", message: message || null },
+        create: {
+          clubId: id,
+          userId,
+          message: message || null,
+          answers: answers || null,
+          status: "PENDING",
+        },
+        update: {
+          status: "PENDING",
+          message: message || null,
+          answers: answers || null,
+        },
       });
 
-      return { joinRequest, isPrivate: true, club };
+      return { joinRequest, isPrivate: !club.isPublic, requiresApproval: true, club };
+    }
+
+    let memberRole = await prisma.role.findFirst({
+      where: { scope: "CLUB", slug: "member" },
+      select: { id: true },
+    });
+    if (!memberRole) {
+      memberRole = await prisma.role.create({
+        data: { name: "Club Member", slug: "member", scope: "CLUB", isSystem: true, color: "#64748B" },
+        select: { id: true },
+      });
     }
 
     const membership = await prisma.clubMember.create({
-      data: { clubId: id, userId, role: "MEMBER" },
-      include: { user: { select: { id: true, name: true, avatar: true } } },
+      data: { clubId: id, userId, roleId: memberRole.id },
+      include: {
+        user: { select: { id: true, name: true, avatar: true } },
+        role: true,
+      },
     });
 
     await prisma.club.update({
@@ -503,7 +549,7 @@ export class ClubService {
       data: { memberCount: { increment: 1 } },
     });
 
-    return { membership, isPrivate: false, club };
+    return { membership, isPrivate: false, requiresApproval: false, club };
   }
 
   static async deleteClub(id: string) {

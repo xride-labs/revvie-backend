@@ -1,4 +1,5 @@
 import { type Request, type Response } from "express";
+import crypto from "crypto";
 import prisma from "../lib/prisma.js";
 import { ApiResponse, ErrorCode } from "../lib/utils/apiResponse.js";
 export class SavedController {
@@ -80,37 +81,151 @@ export class SavedController {
   }
 
   // ─────────────────────────────────────────────────────────────
-  // Saved Lists / Collections
+  // Saved Lists / Collections & Collaborative Playlists
   // ─────────────────────────────────────────────────────────────
+
+  static generateShareCode(prefix = "RV"): string {
+    const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+    let random = "";
+    for (let i = 0; i < 6; i++) {
+      random += chars[Math.floor(Math.random() * chars.length)];
+    }
+    return `${prefix}-${random.slice(0, 3)}-${random.slice(3)}`;
+  }
+
+  static async ensureDefaultLists(userId: string) {
+    const defaultTemplates = [
+      { title: "Want to go", icon: "flag", color: "#F59E0B", description: "Places you want to visit and explore" },
+      { title: "Travel plans", icon: "briefcase", color: "#3B82F6", description: "Itineraries, stops, and road trip milestones" },
+      { title: "Favorites", icon: "heart", color: "#EF4444", description: "Your all-time favorite riding spots and stops" },
+      { title: "Starred places", icon: "star", color: "#EAB308", description: "Special destinations and viewpoints" },
+      { title: "Saved places", icon: "bookmark", color: "#10B981", description: "Quick saved locations and pit stops" },
+    ];
+
+    try {
+      const existing = await prisma.savedPlaceList.findMany({
+        where: { userId },
+        select: { title: true },
+      });
+      const titles = new Set(existing.map((l) => l.title.toLowerCase().trim()));
+
+      for (const t of defaultTemplates) {
+        if (!titles.has(t.title.toLowerCase().trim())) {
+          await prisma.savedPlaceList.create({
+            data: {
+              userId,
+              title: t.title,
+              description: t.description,
+              icon: t.icon,
+              color: t.color,
+              isPublic: false,
+              isDefault: true,
+              isCollaborative: false,
+              shareCode: SavedController.generateShareCode("RV"),
+              inviteToken: crypto.randomUUID(),
+            },
+          });
+        }
+      }
+    } catch (e) {
+      console.warn("[SAVED] Error ensuring default lists:", e);
+    }
+  }
 
   static async getLists(req: Request, res: Response) {
     const userId = (req as any).session?.user?.id;
+    if (!userId) {
+      return ApiResponse.unauthorized(res);
+    }
 
-    const lists = await prisma.savedPlaceList.findMany({
-      where: { userId },
-      include: {
-        _count: { select: { locations: true } },
-        locations: {
-          take: 5,
-          select: {
-            id: true,
-            name: true,
-            latitude: true,
-            longitude: true,
-            type: true,
-            icon: true,
+    // Auto-create default 5 lists if missing for this user
+    await SavedController.ensureDefaultLists(userId);
+
+    const [ownedLists, memberRows] = await Promise.all([
+      prisma.savedPlaceList.findMany({
+        where: { userId },
+        include: {
+          _count: { select: { locations: true, members: true } },
+          locations: {
+            take: 5,
+            select: {
+              id: true,
+              name: true,
+              latitude: true,
+              longitude: true,
+              type: true,
+              icon: true,
+            },
+          },
+          members: {
+            take: 4,
+            include: {
+              user: {
+                select: { id: true, name: true, username: true, avatar: true },
+              },
+            },
+          },
+          user: {
+            select: { id: true, name: true, username: true, avatar: true },
           },
         },
-      },
-      orderBy: { updatedAt: "desc" },
-    });
+        orderBy: [
+          { isDefault: "desc" },
+          { updatedAt: "desc" },
+        ],
+      }),
+      prisma.savedPlaceListMember.findMany({
+        where: { userId },
+        include: {
+          list: {
+            include: {
+              _count: { select: { locations: true, members: true } },
+              locations: {
+                take: 5,
+                select: {
+                  id: true,
+                  name: true,
+                  latitude: true,
+                  longitude: true,
+                  type: true,
+                  icon: true,
+                },
+              },
+              members: {
+                take: 4,
+                include: {
+                  user: {
+                    select: { id: true, name: true, username: true, avatar: true },
+                  },
+                },
+              },
+              user: {
+                select: { id: true, name: true, username: true, avatar: true },
+              },
+            },
+          },
+        },
+        orderBy: { updatedAt: "desc" },
+      }),
+    ]);
 
-    ApiResponse.success(res, { items: lists });
+    const myLists = ownedLists.map((l) => ({ ...l, role: "OWNER" as const }));
+    const joinedLists = memberRows
+      .filter((mr) => mr.list && mr.list.userId !== userId)
+      .map((mr) => ({ ...mr.list, role: mr.role }));
+
+    const allItems = [...myLists, ...joinedLists];
+
+    ApiResponse.success(res, {
+      items: allItems,
+      myLists,
+      joinedLists,
+    });
   }
 
   static async postLists(req: Request, res: Response) {
     const userId = (req as any).session?.user?.id;
-    const { title, description, icon, color, isPublic } = req.body;
+    const { title, description, icon, color, isPublic, isCollaborative } = req.body;
 
     const list = await prisma.savedPlaceList.create({
       data: {
@@ -120,13 +235,18 @@ export class SavedController {
         icon: icon || "map-pin",
         color: color || "#8B5CF6",
         isPublic: Boolean(isPublic),
+        isDefault: false,
+        isCollaborative: Boolean(isCollaborative),
+        shareCode: SavedController.generateShareCode("RV"),
+        inviteToken: crypto.randomUUID(),
       },
       include: {
-        _count: { select: { locations: true } },
+        _count: { select: { locations: true, members: true } },
+        user: { select: { id: true, name: true, username: true, avatar: true } },
       },
     });
 
-    ApiResponse.created(res, list, "Saved list created");
+    ApiResponse.created(res, { ...list, role: "OWNER" }, "Saved list created");
   }
 
   static async getListById(req: Request, res: Response) {
@@ -136,13 +256,32 @@ export class SavedController {
     const list = await prisma.savedPlaceList.findFirst({
       where: {
         id,
-        OR: [{ userId }, { isPublic: true }],
+        OR: [
+          { userId },
+          { isPublic: true },
+          { members: { some: { userId } } },
+        ],
       },
       include: {
         locations: {
           orderBy: { createdAt: "asc" },
+          include: {
+            addedBy: {
+              select: { id: true, name: true, username: true, avatar: true },
+            },
+          },
         },
-        _count: { select: { locations: true } },
+        members: {
+          include: {
+            user: {
+              select: { id: true, name: true, username: true, avatar: true },
+            },
+          },
+        },
+        user: {
+          select: { id: true, name: true, username: true, avatar: true },
+        },
+        _count: { select: { locations: true, members: true } },
       },
     });
 
@@ -150,7 +289,15 @@ export class SavedController {
       return ApiResponse.notFound(res, "Saved list not found");
     }
 
-    ApiResponse.success(res, list);
+    const isOwner = list.userId === userId;
+    const member = list.members.find((m) => m.user.id === userId);
+    const role = isOwner ? "OWNER" : member?.role || (list.isPublic ? "VIEWER" : "NONE");
+
+    ApiResponse.success(res, {
+      ...list,
+      userRole: role,
+      isOwner,
+    });
   }
 
   static async patchListById(req: Request, res: Response) {
@@ -162,14 +309,14 @@ export class SavedController {
     });
 
     if (!existing) {
-      return ApiResponse.notFound(res, "Saved list not found");
+      return ApiResponse.notFound(res, "Saved list not found or unauthorized");
     }
 
     const updated = await prisma.savedPlaceList.update({
       where: { id },
       data: req.body,
       include: {
-        _count: { select: { locations: true } },
+        _count: { select: { locations: true, members: true } },
       },
     });
 
@@ -188,6 +335,10 @@ export class SavedController {
       return ApiResponse.notFound(res, "Saved list not found");
     }
 
+    if (existing.isDefault) {
+      return ApiResponse.badRequest(res, "Default lists cannot be deleted");
+    }
+
     await prisma.savedPlaceList.delete({ where: { id } });
 
     ApiResponse.success(res, { deleted: true }, "Saved list deleted");
@@ -197,18 +348,34 @@ export class SavedController {
     const userId = (req as any).session?.user?.id;
     const { id: listId } = req.params;
 
+    // Allowed if user is owner or list is collaborative and user is a contributor
     const list = await prisma.savedPlaceList.findFirst({
-      where: { id: listId, userId },
+      where: {
+        id: listId,
+        OR: [
+          { userId },
+          {
+            isCollaborative: true,
+            members: {
+              some: {
+                userId,
+                role: { in: ["OWNER", "CONTRIBUTOR"] },
+              },
+            },
+          },
+        ],
+      },
     });
 
     if (!list) {
-      return ApiResponse.notFound(res, "Saved list not found");
+      return ApiResponse.forbidden(res, "You do not have permission to add places to this list");
     }
 
     const { name, address, latitude, longitude, type, icon } = req.body;
     const location = await prisma.savedLocation.create({
       data: {
         userId,
+        addedById: userId,
         listId,
         name,
         address: address || "",
@@ -216,6 +383,11 @@ export class SavedController {
         longitude,
         type: type || "FAVORITE",
         icon: icon || null,
+      },
+      include: {
+        addedBy: {
+          select: { id: true, name: true, username: true, avatar: true },
+        },
       },
     });
 
@@ -232,12 +404,20 @@ export class SavedController {
     const userId = (req as any).session?.user?.id;
     const { id: listId, placeId } = req.params;
 
-    const existing = await prisma.savedLocation.findFirst({
-      where: { id: placeId, listId, userId },
+    const place = await prisma.savedLocation.findFirst({
+      where: { id: placeId, listId },
+      include: { list: true },
     });
 
-    if (!existing) {
+    if (!place) {
       return ApiResponse.notFound(res, "Place not found in this list");
+    }
+
+    const isCreator = place.userId === userId || place.addedById === userId;
+    const isOwner = place.list?.userId === userId;
+
+    if (!isCreator && !isOwner) {
+      return ApiResponse.forbidden(res, "You do not have permission to remove this place");
     }
 
     await prisma.savedLocation.delete({ where: { id: placeId } });
@@ -249,6 +429,160 @@ export class SavedController {
     });
 
     ApiResponse.success(res, { deleted: true }, "Place removed from list");
+  }
+
+  static async postJoinList(req: Request, res: Response) {
+    const userId = (req as any).session?.user?.id;
+    const { shareCode, inviteToken } = req.body;
+
+    if (!shareCode && !inviteToken) {
+      return ApiResponse.badRequest(res, "Share code or invite token is required");
+    }
+
+    const list = await prisma.savedPlaceList.findFirst({
+      where: shareCode
+        ? { shareCode: String(shareCode).trim().toUpperCase() }
+        : { inviteToken: String(inviteToken).trim() },
+      include: {
+        user: { select: { id: true, name: true, username: true, avatar: true } },
+        _count: { select: { locations: true, members: true } },
+      },
+    });
+
+    if (!list) {
+      return ApiResponse.notFound(res, "List not found. Please verify the code or link.");
+    }
+
+    if (list.userId === userId) {
+      return ApiResponse.success(res, { ...list, role: "OWNER", isOwner: true }, "You are the owner of this list");
+    }
+
+    // Add user as contributor
+    const member = await prisma.savedPlaceListMember.upsert({
+      where: {
+        listId_userId: {
+          listId: list.id,
+          userId,
+        },
+      },
+      update: { role: "CONTRIBUTOR" },
+      create: {
+        listId: list.id,
+        userId,
+        role: "CONTRIBUTOR",
+      },
+      include: {
+        user: { select: { id: true, name: true, username: true, avatar: true } },
+      },
+    });
+
+    ApiResponse.success(res, { ...list, role: member.role, isOwner: false }, "Successfully joined list!");
+  }
+
+  static async postInviteFriends(req: Request, res: Response) {
+    const userId = (req as any).session?.user?.id;
+    const { id: listId } = req.params;
+    const { userIds } = req.body as { userIds: string[] };
+
+    if (!Array.isArray(userIds) || userIds.length === 0) {
+      return ApiResponse.badRequest(res, "At least one user ID is required");
+    }
+
+    const list = await prisma.savedPlaceList.findFirst({
+      where: { id: listId, userId },
+    });
+
+    if (!list) {
+      return ApiResponse.forbidden(res, "Only the list owner can invite friends directly");
+    }
+
+    // Ensure list is collaborative
+    if (!list.isCollaborative) {
+      await prisma.savedPlaceList.update({
+        where: { id: listId },
+        data: { isCollaborative: true },
+      });
+    }
+
+    const created = await Promise.all(
+      userIds.map((invitedId) =>
+        prisma.savedPlaceListMember.upsert({
+          where: {
+            listId_userId: {
+              listId,
+              userId: invitedId,
+            },
+          },
+          update: { role: "CONTRIBUTOR" },
+          create: {
+            listId,
+            userId: invitedId,
+            role: "CONTRIBUTOR",
+          },
+        })
+      )
+    );
+
+    ApiResponse.success(res, { invitedCount: created.length }, "Friends added as contributors");
+  }
+
+  static async deleteMember(req: Request, res: Response) {
+    const userId = (req as any).session?.user?.id;
+    const { id: listId, memberId } = req.params;
+
+    const list = await prisma.savedPlaceList.findUnique({
+      where: { id: listId },
+    });
+
+    if (!list) {
+      return ApiResponse.notFound(res, "List not found");
+    }
+
+    const isOwner = list.userId === userId;
+    const isSelf = memberId === userId;
+
+    if (!isOwner && !isSelf) {
+      return ApiResponse.forbidden(res, "You do not have permission to remove this member");
+    }
+
+    await prisma.savedPlaceListMember.deleteMany({
+      where: {
+        listId,
+        userId: memberId,
+      },
+    });
+
+    ApiResponse.success(res, { removed: true }, "Member removed from list");
+  }
+
+  static async toggleCollab(req: Request, res: Response) {
+    const userId = (req as any).session?.user?.id;
+    const { id } = req.params;
+    const { isCollaborative } = req.body;
+
+    const list = await prisma.savedPlaceList.findFirst({
+      where: { id, userId },
+    });
+
+    if (!list) {
+      return ApiResponse.notFound(res, "Saved list not found");
+    }
+
+    const nextCollab = isCollaborative !== undefined ? Boolean(isCollaborative) : !list.isCollaborative;
+
+    const updated = await prisma.savedPlaceList.update({
+      where: { id },
+      data: {
+        isCollaborative: nextCollab,
+        shareCode: list.shareCode || SavedController.generateShareCode("RV"),
+        inviteToken: list.inviteToken || crypto.randomUUID(),
+      },
+      include: {
+        _count: { select: { locations: true, members: true } },
+      },
+    });
+
+    ApiResponse.success(res, updated, "Collaboration setting updated");
   }
 
   static async postImportList(req: Request, res: Response) {

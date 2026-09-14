@@ -101,9 +101,10 @@ export async function applyModeration(
 
   const member = await prisma.clubMember.findUnique({
     where: { clubId_userId: { clubId, userId: targetUserId } },
+    include: { role: true },
   });
   if (!member) throw new Error("Member not found");
-  if (member.role === "FOUNDER") {
+  if (member.role.slug === "owner" || member.role.slug === "founder") {
     throw new Error("The club founder can't be moderated");
   }
 
@@ -118,27 +119,37 @@ export async function applyModeration(
 
   let result: ModerationResult = {
     status: "ACTIVE",
-    role: member.role,
+    role: member.role.name,
     removed: false,
   };
   let systemLine = "";
 
   switch (action) {
     case "PROMOTE": {
+      const adminRole = await prisma.role.findFirst({
+        where: { scope: "CLUB", slug: "admin" },
+      });
+      if (!adminRole) throw new Error("Admin role not found");
       const updated = await prisma.clubMember.update({
         where: { clubId_userId: { clubId, userId: targetUserId } },
-        data: { role: "ADMIN" },
+        data: { roleId: adminRole.id },
+        include: { role: true },
       });
-      result = { status: effectiveStatus(updated), role: updated.role, removed: false };
+      result = { status: effectiveStatus(updated), role: updated.role.name, removed: false };
       systemLine = `${name} was promoted to admin by ${actorName}`;
       break;
     }
     case "DEMOTE": {
+      const memberRole = await prisma.role.findFirst({
+        where: { scope: "CLUB", slug: "member" },
+      });
+      if (!memberRole) throw new Error("Member role not found");
       const updated = await prisma.clubMember.update({
         where: { clubId_userId: { clubId, userId: targetUserId } },
-        data: { role: "MEMBER" },
+        data: { roleId: memberRole.id },
+        include: { role: true },
       });
-      result = { status: effectiveStatus(updated), role: updated.role, removed: false };
+      result = { status: effectiveStatus(updated), role: updated.role.name, removed: false };
       systemLine = `${name} is no longer an admin`;
       break;
     }

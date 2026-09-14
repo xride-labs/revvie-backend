@@ -89,6 +89,7 @@ const createSavedListSchema = z.object({
   icon: z.string().max(50).optional().default("map-pin"),
   color: z.string().max(30).optional().default("#8B5CF6"),
   isPublic: z.boolean().optional().default(false),
+  isCollaborative: z.boolean().optional().default(false),
 });
 
 const updateSavedListSchema = z.object({
@@ -97,6 +98,20 @@ const updateSavedListSchema = z.object({
   icon: z.string().max(50).optional(),
   color: z.string().max(30).optional(),
   isPublic: z.boolean().optional(),
+  isCollaborative: z.boolean().optional(),
+});
+
+const joinSavedListSchema = z.object({
+  shareCode: z.string().optional(),
+  inviteToken: z.string().optional(),
+});
+
+const inviteFriendsSchema = z.object({
+  userIds: z.array(z.string().min(1)).min(1, "At least one user ID is required"),
+});
+
+const toggleCollabSchema = z.object({
+  isCollaborative: z.boolean().optional(),
 });
 
 const importSavedListSchema = z.object({
@@ -121,7 +136,7 @@ const importSavedListSchema = z.object({
 
 /**
  * GET /api/saved/lists
- * List all saved place lists for current user
+ * List all saved place lists for current user (my lists + joined lists)
  */
 router.get("/lists", asyncHandler(SavedController.getLists));
 
@@ -133,6 +148,45 @@ router.post(
   "/lists",
   validateBody(createSavedListSchema),
   asyncHandler(SavedController.postLists)
+);
+
+/**
+ * POST /api/saved/lists/join
+ * Join a collaborative list via shareCode or inviteToken
+ */
+router.post(
+  "/lists/join",
+  validateBody(joinSavedListSchema),
+  asyncHandler(SavedController.postJoinList)
+);
+
+/**
+ * POST /api/saved/lists/:id/invite
+ * Invite friends directly as contributors
+ */
+router.post(
+  "/lists/:id/invite",
+  validateBody(inviteFriendsSchema),
+  asyncHandler(SavedController.postInviteFriends)
+);
+
+/**
+ * DELETE /api/saved/lists/:id/members/:memberId
+ * Remove a collaborator or leave the list
+ */
+router.delete(
+  "/lists/:id/members/:memberId",
+  asyncHandler(SavedController.deleteMember)
+);
+
+/**
+ * POST /api/saved/lists/:id/toggle-collab
+ * Toggle collaborative mode for a list
+ */
+router.post(
+  "/lists/:id/toggle-collab",
+  validateBody(toggleCollabSchema),
+  asyncHandler(SavedController.toggleCollab)
 );
 
 /**

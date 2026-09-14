@@ -108,12 +108,12 @@ export class ClubController {
     const session = (req as any).session;
     const { id } = req.params;
     try {
-      const result = await ClubService.joinClub(id, session.user.id, req.body.message);
+      const result = await ClubService.joinClub(id, session.user.id, req.body.message, req.body.answers);
       
-      if (result.isPrivate) {
+      if (result.requiresApproval || result.isPrivate) {
         import("../lib/notifications.js").then(async ({ notifyUsers }) => {
           const clubAdmins = await import("../lib/prisma.js").then(m => m.default.clubMember.findMany({
-            where: { clubId: id, role: { in: ["ADMIN", "FOUNDER"] } },
+            where: { clubId: id, role: { slug: { in: ["admin", "owner", "founder"] } } },
             select: { userId: true },
           }));
           const approverIds = Array.from(new Set([result.club.ownerId, ...clubAdmins.map(a => a.userId)])).filter(uId => uId !== session.user.id);
@@ -121,12 +121,12 @@ export class ClubController {
           await notifyUsers(approverIds, {
             type: "CLUB_REQUEST",
             title: `New request to join ${result.club.name}`,
-            message: `A rider requested to join your club community.`,
+            message: `A rider submitted an application to join your club.`,
             relatedType: "club",
             relatedId: id,
           });
         });
-        return ApiResponse.created(res, { joinRequest: result.joinRequest }, "Join request sent — waiting for admin approval");
+        return ApiResponse.created(res, { joinRequest: result.joinRequest }, "Application submitted — waiting for club review");
       }
 
       import("../services/club/groupChat.service.js").then((m) => {
@@ -138,6 +138,7 @@ export class ClubController {
       if (err.message === "BANNED") return ApiResponse.forbidden(res, "You are banned from this community");
       if (err.message === "ALREADY_MEMBER") return ApiResponse.conflict(res, "You are already a member of this club");
       if (err.message === "PENDING_REQUEST") return ApiResponse.conflict(res, "You already have a pending join request");
+      if (err.message === "INVITE_ONLY") return ApiResponse.forbidden(res, "This club is private and invite-only");
       if (err.message === "JOIN_LIMIT_REACHED")
         return ApiResponse.forbidden(
           res,
@@ -156,5 +157,117 @@ export class ClubController {
     } catch {
       ApiResponse.error(res, "Failed to delete club", 500);
     }
+  }
+
+  // ── Join Flow Configuration ──
+  static async getJoinFlow(req: Request, res: Response) {
+    const { id } = req.params;
+    const club = await (await import("../lib/prisma.js")).default.club.findUnique({
+      where: { id },
+      select: {
+        id: true,
+        name: true,
+        joinPolicy: true,
+        joinQuestions: true,
+        isPublic: true,
+        requiresLicense: true,
+      },
+    });
+
+    if (!club) return ApiResponse.notFound(res, "Club not found");
+    ApiResponse.success(res, { joinFlow: club });
+  }
+
+  static async updateJoinFlow(req: Request, res: Response) {
+    const { id } = req.params;
+    const { joinPolicy, joinQuestions, isPublic, requiresLicense } = req.body;
+
+    const data: any = {};
+    if (joinPolicy !== undefined) data.joinPolicy = joinPolicy;
+    if (joinQuestions !== undefined) data.joinQuestions = joinQuestions;
+    if (isPublic !== undefined) data.isPublic = isPublic;
+    if (requiresLicense !== undefined) data.requiresLicense = requiresLicense;
+
+    const club = await (await import("../lib/prisma.js")).default.club.update({
+      where: { id },
+      data,
+      select: {
+        id: true,
+        name: true,
+        joinPolicy: true,
+        joinQuestions: true,
+        isPublic: true,
+        requiresLicense: true,
+      },
+    });
+
+    ApiResponse.success(res, { joinFlow: club }, "Join flow updated successfully");
+  }
+
+  // ── Custom Roles & Permissions ──
+  static async getClubRoles(req: Request, res: Response) {
+    const { id } = req.params;
+    const { RolesService } = await import("../services/roles.service.js");
+    const roles = await RolesService.listClubRoles(id);
+    ApiResponse.success(res, { roles });
+  }
+
+  static async getClubPermissions(req: Request, res: Response) {
+    const { RolesService } = await import("../services/roles.service.js");
+    const permissions = await RolesService.listClubPermissions();
+    ApiResponse.success(res, { permissions });
+  }
+
+  static async createClubRole(req: Request, res: Response) {
+    const { id } = req.params;
+    const { RolesService } = await import("../services/roles.service.js");
+    const { name, description, color, icon, permissionCodes } = req.body;
+
+    if (!name || !permissionCodes || !Array.isArray(permissionCodes)) {
+      return ApiResponse.error(res, "Role name and permissionCodes array are required", 400);
+    }
+
+    const role = await RolesService.createClubRole(id, {
+      name,
+      description,
+      color,
+      icon,
+      permissionCodes,
+    });
+
+    ApiResponse.created(res, { role }, "Custom role created successfully");
+  }
+
+  static async updateClubRole(req: Request, res: Response) {
+    const { id, roleId } = req.params;
+    const { RolesService } = await import("../services/roles.service.js");
+    const { name, description, color, icon, permissionCodes } = req.body;
+
+    const role = await RolesService.updateClubRole(id, roleId, {
+      name,
+      description,
+      color,
+      icon,
+      permissionCodes,
+    });
+
+    ApiResponse.success(res, { role }, "Role updated successfully");
+  }
+
+  static async deleteClubRole(req: Request, res: Response) {
+    const { id, roleId } = req.params;
+    const { RolesService } = await import("../services/roles.service.js");
+
+    await RolesService.deleteClubRole(id, roleId);
+    ApiResponse.success(res, null, "Role deleted successfully");
+  }
+
+  static async assignClubMemberRole(req: Request, res: Response) {
+    const { id, userId } = req.params;
+    const { roleId } = req.body;
+    const { RolesService } = await import("../services/roles.service.js");
+
+    const member = await RolesService.assignClubMemberRole(id, userId, roleId ?? null);
+    ApiResponse.success(res, { member }, "Member role updated successfully");
   }
 }

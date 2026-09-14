@@ -7,7 +7,6 @@
 import request from "supertest";
 import {
   ListingStatus,
-  ClubMemberRole,
   RideParticipantStatus,
 } from "@prisma/client";
 import { app } from "../server.js";
@@ -204,13 +203,23 @@ export async function createTestEvent(creatorId: string, eventData?: Partial<any
 export async function addUserToClub(
   userId: string,
   clubId: string,
-  role: ClubMemberRole = ClubMemberRole.MEMBER,
+  roleSlug: string = "member",
 ) {
+  let role = await prisma.role.findFirst({
+    where: { slug: roleSlug, scope: "CLUB" },
+    select: { id: true },
+  });
+  if (!role) {
+    role = await prisma.role.create({
+      data: { name: roleSlug, slug: roleSlug, scope: "CLUB", isSystem: true },
+      select: { id: true },
+    });
+  }
   return prisma.clubMember.create({
     data: {
       userId,
       clubId,
-      role,
+      roleId: role.id,
     },
   });
 }

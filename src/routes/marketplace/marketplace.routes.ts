@@ -47,7 +47,9 @@ async function isAdminOrCoAdmin(userId: string): Promise<boolean> {
   const role = await prisma.userRoleAssignment.findFirst({
     where: {
       userId,
-      role: { in: ["ADMIN", "CO_ADMIN"] },
+      roleRecord: {
+        slug: { in: ["super_admin", "admin", "co_admin"] },
+      },
     },
     select: { id: true },
   });
@@ -1130,9 +1132,19 @@ router.post(
     });
 
     // Ensure user has SELLER role
+    let sellerRole = await prisma.role.findFirst({
+      where: { slug: "seller", scope: "GLOBAL" },
+      select: { id: true },
+    });
+    if (!sellerRole) {
+      sellerRole = await prisma.role.create({
+        data: { name: "Marketplace Seller", slug: "seller", scope: "GLOBAL", isSystem: true, color: "#14B8A6" },
+        select: { id: true },
+      });
+    }
     await prisma.userRoleAssignment.upsert({
-      where: { userId_role: { userId: session.user.id, role: "SELLER" } },
-      create: { userId: session.user.id, role: "SELLER" },
+      where: { userId_roleId: { userId: session.user.id, roleId: sellerRole.id } },
+      create: { userId: session.user.id, roleId: sellerRole.id },
       update: {},
     });
 

@@ -129,6 +129,8 @@ model User {
   createdClubs        Club[]               @relation("ClubOwner")
   clubMemberships     ClubMember[]
   clubJoinRequests    ClubJoinRequest[]
+  rolesAssigned       UserRoleAssignment[] @relation("RoleAssignedBy")
+  reviewedJoinRequests ClubJoinRequest[]   @relation("JoinRequestReviewer")
   marketplaceListings MarketplaceListing[] @relation("SellerListings")
   wishlist            Wishlist[]
   recentlyViewed      RecentlyViewedListing[]
@@ -186,9 +188,11 @@ model User {
   businessInquiries BusinessInquiry[] @relation("InquiriesMade")
 
   // Saved locations & routes & custom lists
-  savedLocations  SavedLocation[]
-  savedRoutes     SavedRoute[]
-  savedPlaceLists SavedPlaceList[]
+  savedLocations        SavedLocation[]
+  savedLocationsAdded   SavedLocation[]        @relation("SavedLocationAddedBy")
+  savedRoutes           SavedRoute[]
+  savedPlaceLists       SavedPlaceList[]
+  savedPlaceListMembers SavedPlaceListMember[]
 
   @@map("users")
 }
@@ -239,21 +243,6 @@ model BillingSubscription {
 
 // Application-specific models for Phase 1 MVP
 
-// User roles for role-based access control
-enum UserRole {
-  ADMIN // Super admin with full platform access (web + mobile)
-  CO_ADMIN // Delegated admin with broad dashboard access
-  MODERATOR // Platform moderator - can moderate content, handle reports
-  CLUB_OWNER // Club creator/manager (web + mobile)
-  CLUB_ADMIN // Club admin/co-admin
-  CLUB_MODERATOR // Club moderator
-  BRAND_OWNER // Brand/business owner
-  BRAND_ADMIN // Brand admin/co-admin
-  BRAND_MODERATOR // Brand moderator
-  RIDER // Default role for new signups - active motorcycle rider (mobile)
-  SELLER // Marketplace seller - assigned when user lists items (web + mobile)
-}
-
 // Platform-wide admin settings (single-row, scope = "global")
 model AdminSettings {
   id           String @id @default(cuid())
@@ -300,16 +289,94 @@ model AdminSettings {
   @@map("admin_settings")
 }
 
-// Many-to-many user role assignments (multi-role support)
+// ============================================
+// DYNAMIC RBAC & CUSTOM ROLES / PERMISSIONS
+// ============================================
+
+enum PermissionScope {
+  SYSTEM
+  CLUB
+  BUSINESS
+}
+
+enum RoleScope {
+  GLOBAL
+  CLUB
+  BUSINESS
+}
+
+model Permission {
+  id          String          @id @default(cuid())
+  code        String          @unique // e.g. "system:manage_users", "club:view_analytics", "club:manage_rides", "club:manage_roles"
+  name        String
+  description String?
+  category    String          // e.g. "Club Management", "System Admin", "Rides & Safety"
+  scope       PermissionScope @default(SYSTEM)
+  isSystem    Boolean         @default(true) @map("is_system")
+  createdAt   DateTime        @default(now()) @map("created_at")
+  updatedAt   DateTime        @updatedAt @map("updated_at")
+
+  roles       RolePermission[]
+
+  @@index([scope], map: "permissions_scope_idx")
+  @@index([category], map: "permissions_category_idx")
+  @@map("permissions")
+}
+
+model Role {
+  id          String    @id @default(cuid())
+  name        String
+  slug        String
+  description String?
+  scope       RoleScope @default(GLOBAL)
+  scopeId     String?   @map("scope_id") // clubId for CLUB, businessId for BUSINESS, null for GLOBAL
+  isSystem    Boolean   @default(false) @map("is_system")
+  color       String?   @default("#f97316")
+  icon        String?   @default("shield")
+  priority    Int       @default(0)
+  createdAt   DateTime  @default(now()) @map("created_at")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+
+  permissions RolePermission[]
+  assignments UserRoleAssignment[]
+  clubMembers ClubMember[]
+
+  @@unique([slug, scope, scopeId], map: "roles_slug_scope_scope_id_unique")
+  @@index([scope, scopeId], map: "roles_scope_scope_id_idx")
+  @@index([isSystem], map: "roles_is_system_idx")
+  @@map("roles")
+}
+
+model RolePermission {
+  id           String     @id @default(cuid())
+  roleId       String     @map("role_id")
+  permissionId String     @map("permission_id")
+  assignedAt   DateTime   @default(now()) @map("assigned_at")
+
+  role         Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission   Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@unique([roleId, permissionId], map: "role_permissions_role_permission_unique")
+  @@index([roleId], map: "role_permissions_role_idx")
+  @@index([permissionId], map: "role_permissions_permission_idx")
+  @@map("role_permissions")
+}
+
+// Many-to-many user role assignments (database-driven dynamic RBAC)
 model UserRoleAssignment {
-  id         String   @id @default(cuid())
-  userId     String   @map("user_id")
-  role       UserRole
-  assignedAt DateTime @default(now()) @map("assigned_at")
+  id           String    @id @default(cuid())
+  userId       String    @map("user_id")
+  roleId       String    @map("role_id")
+  assignedById String?   @map("assigned_by_id")
+  assignedAt   DateTime  @default(now()) @map("assigned_at")
 
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user         User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  roleRecord   Role      @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  assignedBy   User?     @relation("RoleAssignedBy", fields: [assignedById], references: [id], onDelete: SetNull)
 
-  @@unique([userId, role])
+  @@unique([userId, roleId], map: "user_role_assignments_user_role_unique")
+  @@index([userId], map: "user_role_assignments_user_idx")
+  @@index([roleId], map: "user_role_assignments_role_idx")
   @@map("user_role_assignments")
 }
 
@@ -647,13 +714,6 @@ enum RideBreakType {
   OTHER
 }
 
-enum ClubMemberRole {
-  MEMBER // Regular club member
-  OFFICER // Club officer/moderator
-  ADMIN // Club admin
-  FOUNDER // Club founder
-}
-
 // Moderation state of a club member. ACTIVE is the normal state; the others
 // are driven by the *Until timestamps on ClubMember and re-derived lazily
 // (a SUSPENDED member whose suspendedUntil has passed is treated as ACTIVE).
@@ -914,6 +974,8 @@ model Club {
   clubType        String?   @map("club_type") // e.g., Riding Club, Social Club
   isPublic        Boolean   @default(true) @map("is_public")
   requiresLicense Boolean   @default(false) @map("requires_license")
+  joinPolicy      String    @default("OPEN") @map("join_policy") // OPEN | APPLICATION | INVITE_ONLY
+  joinQuestions   Json?     @map("join_questions") // Array of { id, question, type, options?, required }
   memberCount     Int       @default(0) @map("member_count")
   trophies        String[] // Array of trophy names or IDs
   trophyCount     Int       @default(0) @map("trophy_count")
@@ -1083,12 +1145,12 @@ model ChatMessage {
   @@map("chat_messages")
 }
 
-// Club membership model with roles
+// Club membership model with dynamic roles
 model ClubMember {
   id       String         @id @default(cuid())
   clubId   String         @map("club_id")
   userId   String         @map("user_id")
-  role     ClubMemberRole @default(MEMBER)
+  roleId   String         @map("role_id")
   joinedAt DateTime       @default(now()) @map("joined_at")
 
   // ── Moderation state (Discord-style, club-wide) ──────────────────────────
@@ -1108,9 +1170,11 @@ model ClubMember {
 
   club Club @relation(fields: [clubId], references: [id], onDelete: Cascade)
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role Role @relation(fields: [roleId], references: [id], onDelete: Cascade)
 
   @@unique([clubId, userId])
   @@index([clubId, status], map: "club_members_status_idx")
+  @@index([roleId], map: "club_members_role_idx")
   @@map("club_members")
 }
 
@@ -1137,18 +1201,24 @@ model ClubModerationAction {
 
 // Club join request for private clubs or moderated joins
 model ClubJoinRequest {
-  id        String                @id @default(cuid())
-  clubId    String                @map("club_id")
-  userId    String                @map("user_id")
-  message   String? // Optional message from the requester
-  status    ClubJoinRequestStatus @default(PENDING)
-  createdAt DateTime              @default(now()) @map("created_at")
-  updatedAt DateTime              @updatedAt @map("updated_at")
+  id              String                @id @default(cuid())
+  clubId          String                @map("club_id")
+  userId          String                @map("user_id")
+  message         String? // Optional message from the requester
+  answers         Json?                 @map("answers") // Array of { questionId, question, answer }
+  status          ClubJoinRequestStatus @default(PENDING)
+  reviewedById    String?               @map("reviewed_by_id")
+  reviewedAt      DateTime?             @map("reviewed_at")
+  rejectionReason String?               @map("rejection_reason")
+  createdAt       DateTime              @default(now()) @map("created_at")
+  updatedAt       DateTime              @updatedAt @map("updated_at")
 
-  club Club @relation(fields: [clubId], references: [id], onDelete: Cascade)
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  club       Club  @relation(fields: [clubId], references: [id], onDelete: Cascade)
+  user       User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  reviewedBy User? @relation("JoinRequestReviewer", fields: [reviewedById], references: [id], onDelete: SetNull)
 
   @@unique([clubId, userId])
+  @@index([clubId, status], map: "club_join_requests_club_status_idx")
   @@map("club_join_requests")
 }
 
@@ -1453,6 +1523,7 @@ model UserPreferences {
   showBikes               Boolean @default(true) @map("show_bikes")
   lowDataMode             Boolean @default(false) @map("low_data_mode")
   showStats               Boolean @default(true) @map("show_stats")
+  homeWidgets             Json?   @map("home_widgets") // Custom home feed widget layout: [{ id, visible, order }]
   // Beta sensor/ghost-mode toggles — persisted so the live ride and ghost
   // location settings survive logout. Default off because the flow assumes
   // explicit opt-in (battery + privacy implications).
@@ -2083,6 +2154,7 @@ model SavedLocation {
   id        String            @id @default(cuid())
   userId    String            @map("user_id")
   listId    String?           @map("list_id")
+  addedById String?           @map("added_by_id")
   name      String
   address   String
   latitude  Float
@@ -2092,30 +2164,60 @@ model SavedLocation {
   createdAt DateTime          @default(now()) @map("created_at")
   updatedAt DateTime          @updatedAt @map("updated_at")
 
-  user User            @relation(fields: [userId], references: [id], onDelete: Cascade)
-  list SavedPlaceList? @relation(fields: [listId], references: [id], onDelete: Cascade)
+  user    User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  list    SavedPlaceList? @relation(fields: [listId], references: [id], onDelete: Cascade)
+  addedBy User?           @relation("SavedLocationAddedBy", fields: [addedById], references: [id], onDelete: SetNull)
 
   @@index([userId], map: "saved_locations_user_idx")
   @@index([listId], map: "saved_locations_list_idx")
+  @@index([addedById], map: "saved_locations_added_by_idx")
   @@map("saved_locations")
 }
 
 model SavedPlaceList {
-  id          String   @id @default(cuid())
-  userId      String   @map("user_id")
-  title       String
-  description String?
-  icon        String?  @default("map-pin")
-  color       String?  @default("#8B5CF6")
-  isPublic    Boolean  @default(false) @map("is_public")
-  createdAt   DateTime @default(now()) @map("created_at")
-  updatedAt   DateTime @updatedAt @map("updated_at")
+  id              String   @id @default(cuid())
+  userId          String   @map("user_id")
+  title           String
+  description     String?
+  icon            String?  @default("map-pin")
+  color           String?  @default("#8B5CF6")
+  isPublic        Boolean  @default(false) @map("is_public")
+  isDefault       Boolean  @default(false) @map("is_default")
+  isCollaborative Boolean  @default(false) @map("is_collaborative")
+  shareCode       String?  @unique @map("share_code")
+  inviteToken     String?  @unique @map("invite_token")
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
 
-  user      User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user      User                   @relation(fields: [userId], references: [id], onDelete: Cascade)
   locations SavedLocation[]
+  members   SavedPlaceListMember[]
 
   @@index([userId], map: "saved_place_lists_user_idx")
   @@map("saved_place_lists")
+}
+
+enum SavedPlaceListRole {
+  OWNER
+  CONTRIBUTOR
+  VIEWER
+}
+
+model SavedPlaceListMember {
+  id        String             @id @default(cuid())
+  listId    String             @map("list_id")
+  userId    String             @map("user_id")
+  role      SavedPlaceListRole @default(CONTRIBUTOR)
+  createdAt DateTime           @default(now()) @map("created_at")
+  updatedAt DateTime           @updatedAt @map("updated_at")
+
+  list SavedPlaceList @relation(fields: [listId], references: [id], onDelete: Cascade)
+  user User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([listId, userId], map: "saved_place_list_members_unique")
+  @@index([userId], map: "saved_place_list_members_user_idx")
+  @@index([listId], map: "saved_place_list_members_list_idx")
+  @@map("saved_place_list_members")
 }
 
 model SavedRoute {

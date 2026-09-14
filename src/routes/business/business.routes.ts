@@ -214,11 +214,21 @@ router.post(
     const { categories, displayName, tagline } = req.body;
 
     const assignBrandOwnerRole = async () => {
+      let brandOwnerRole = await prisma.role.findFirst({
+        where: { slug: "brand_owner", scope: "GLOBAL" },
+        select: { id: true },
+      });
+      if (!brandOwnerRole) {
+        brandOwnerRole = await prisma.role.create({
+          data: { name: "Brand Owner", slug: "brand_owner", scope: "GLOBAL", isSystem: true, color: "#10B981" },
+          select: { id: true },
+        });
+      }
       await prisma.userRoleAssignment.upsert({
         where: {
-          userId_role: { userId: session.user.id, role: "BRAND_OWNER" },
+          userId_roleId: { userId: session.user.id, roleId: brandOwnerRole.id },
         },
-        create: { userId: session.user.id, role: "BRAND_OWNER" },
+        create: { userId: session.user.id, roleId: brandOwnerRole.id },
         update: {},
       });
     };
@@ -863,18 +873,34 @@ router.post(
     });
 
     // Grant the appropriate platform role so the portal works for them.
-    const platformRole =
+    const platformRoleSlug =
       role === "ADMIN"
-        ? "BRAND_ADMIN"
+        ? "brand_admin"
         : role === "MODERATOR"
-          ? "BRAND_MODERATOR"
+          ? "brand_moderator"
           : null;
-    if (platformRole) {
+    if (platformRoleSlug) {
+      let roleRecord = await prisma.role.findFirst({
+        where: { slug: platformRoleSlug, scope: "GLOBAL" },
+        select: { id: true },
+      });
+      if (!roleRecord) {
+        roleRecord = await prisma.role.create({
+          data: {
+            name: platformRoleSlug === "brand_admin" ? "Brand Admin" : "Brand Moderator",
+            slug: platformRoleSlug,
+            scope: "GLOBAL",
+            isSystem: true,
+            color: "#10B981",
+          },
+          select: { id: true },
+        });
+      }
       await prisma.userRoleAssignment.upsert({
         where: {
-          userId_role: { userId: target.id, role: platformRole as any },
+          userId_roleId: { userId: target.id, roleId: roleRecord.id },
         },
-        create: { userId: target.id, role: platformRole as any },
+        create: { userId: target.id, roleId: roleRecord.id },
         update: {},
       });
     }

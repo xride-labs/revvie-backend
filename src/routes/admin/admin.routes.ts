@@ -34,6 +34,7 @@ import {
   updateAdminSettings,
 } from "../../lib/adminSettings.js";
 import adminCommerceRouter from "./admin.commerce.routes.js";
+import adminRolesRouter from "./roles.routes.js";
 
 const router = Router();
 
@@ -41,24 +42,28 @@ const router = Router();
 // Mounted before the existing handlers so the requireAdmin gate inside that
 // sub-router applies cleanly without depending on this file's route order.
 router.use("/", adminCommerceRouter);
+router.use("/", adminRolesRouter);
 
-const PRIVILEGED_ADMIN_ROLES: UserRole[] = [
-  UserRole.ADMIN,
-  UserRole.CO_ADMIN,
-  UserRole.MODERATOR,
+const PRIVILEGED_ADMIN_ROLES: string[] = [
+  "SUPER_ADMIN",
+  "SYSTEM_ADMIN",
+  "ADMIN",
+  "CO_ADMIN",
+  "MODERATOR",
 ];
 
-function getRequesterRoles(req: Request): UserRole[] {
-  return (((req as any).userRoles ?? []) as UserRole[]).filter(Boolean);
+function getRequesterRoles(req: Request): string[] {
+  return (((req as any).userRoles ?? []) as string[]).filter(Boolean);
 }
 
 function isRequesterSuperAdmin(req: Request): boolean {
-  return getRequesterRoles(req).includes(UserRole.ADMIN);
+  const roles = getRequesterRoles(req);
+  return roles.includes("SUPER_ADMIN") || roles.includes("ADMIN");
 }
 
 function includesPrivilegedAdminRole(roles: readonly string[]): boolean {
   return roles.some((role) =>
-    PRIVILEGED_ADMIN_ROLES.includes(role as UserRole),
+    PRIVILEGED_ADMIN_ROLES.includes(role.toUpperCase()),
   );
 }
 
@@ -66,7 +71,9 @@ async function userHasPrivilegedAdminRole(userId: string): Promise<boolean> {
   const privilegedRole = await prisma.userRoleAssignment.findFirst({
     where: {
       userId,
-      role: { in: PRIVILEGED_ADMIN_ROLES },
+      roleRecord: {
+        slug: { in: ["super_admin", "system_admin", "admin", "co_admin", "moderator"] },
+      },
     },
     select: { id: true },
   });
@@ -88,7 +95,7 @@ function toAdminUserRecord(user: {
   phoneVerified: boolean;
   createdAt: Date;
   updatedAt: Date;
-  userRoles: Array<{ role: string }>;
+  userRoles: Array<{ roleRecord?: { slug: string; name: string } | null; role?: string }>;
   rideStats: { totalRides: number } | null;
   _count: { createdRides: number; createdClubs: number };
 }) {
@@ -106,7 +113,7 @@ function toAdminUserRecord(user: {
     phoneVerified: user.phoneVerified,
     status: user.emailVerified ? "active" : "pending",
     lastActive: user.updatedAt.toISOString(),
-    roles: user.userRoles.map((r) => r.role),
+    roles: user.userRoles.map((r) => r.roleRecord?.slug.toUpperCase() || r.role || "RIDER"),
     ridesCompleted: user.rideStats?.totalRides ?? 0,
     createdAt: user.createdAt.toISOString(),
     _count: user._count,
@@ -139,7 +146,7 @@ function toAdminUserDetail(user: {
   subscriptionTier: string | null;
   createdAt: Date;
   updatedAt: Date;
-  userRoles: Array<{ role: string }>;
+  userRoles: Array<{ roleRecord?: { slug: string; name: string } | null; role?: string }>;
   rideStats: {
     totalDistanceKm: number;
     longestRideKm: number;
@@ -213,7 +220,7 @@ function toAdminUserDetail(user: {
     phoneVerified: user.phoneVerified,
     status: user.emailVerified ? "active" : "pending",
     lastActive: user.updatedAt.toISOString(),
-    roles: user.userRoles.map((r) => r.role),
+    roles: user.userRoles.map((r) => r.roleRecord?.slug.toUpperCase() || r.role || "RIDER"),
     createdAt: user.createdAt.toISOString(),
     updatedAt: user.updatedAt.toISOString(),
     dob: user.dob?.toISOString() ?? null,
@@ -352,9 +359,15 @@ router.get(
 
     // Get user role breakdown from role assignments
     const usersByRole = await prisma.userRoleAssignment.groupBy({
-      by: ["role"],
-      _count: { role: true },
+      by: ["roleId"],
+      _count: { roleId: true },
     });
+
+    const roleRecords = await prisma.role.findMany({
+      where: { id: { in: usersByRole.map((r) => r.roleId) } },
+      select: { id: true, name: true, slug: true },
+    });
+    const roleMap = new Map(roleRecords.map((r) => [r.id, r.name || r.slug]));
 
     // Get rides by status
     const ridesByStatus = await prisma.ride.groupBy({
@@ -383,7 +396,8 @@ router.get(
         usersByRole: (() => {
           const result: Record<string, number> = {};
           for (const item of usersByRole) {
-            result[item.role] = item._count.role;
+            const roleName = roleMap.get(item.roleId) || item.roleId;
+            result[roleName] = item._count.roleId;
           }
           return result;
         })(),
@@ -558,7 +572,7 @@ router.get(
           activityLevel: true,
           emailVerified: true,
           phoneVerified: true,
-          userRoles: { select: { role: true } },
+          userRoles: { select: { roleRecord: true } },
           rideStats: { select: { totalRides: true } },
           createdAt: true,
           updatedAt: true,
@@ -616,7 +630,7 @@ router.get(
           helmetVerified: true,
           lastSafetyCheck: true,
           subscriptionTier: true,
-          userRoles: { select: { role: true } },
+          userRoles: { select: { roleRecord: true } },
           rideStats: {
             select: {
               totalDistanceKm: true,
@@ -800,7 +814,7 @@ router.post(
         activityLevel: true,
         emailVerified: true,
         phoneVerified: true,
-        userRoles: { select: { role: true } },
+        userRoles: { select: { roleRecord: true } },
         rideStats: { select: { totalRides: true } },
         createdAt: true,
         updatedAt: true,
@@ -883,7 +897,7 @@ router.patch(
           activityLevel: true,
           emailVerified: true,
           phoneVerified: true,
-          userRoles: { select: { role: true } },
+          userRoles: { select: { roleRecord: true } },
           rideStats: { select: { totalRides: true } },
           createdAt: true,
           updatedAt: true,
@@ -895,8 +909,16 @@ router.patch(
 
       if (Array.isArray(roles)) {
         await tx.userRoleAssignment.deleteMany({ where: { userId: id } });
+        const roleRecords = await tx.role.findMany({
+          where: {
+            OR: [
+              { slug: { in: roles.map((r: string) => r.toLowerCase()) } },
+              { id: { in: roles } },
+            ],
+          },
+        });
         await tx.userRoleAssignment.createMany({
-          data: roles.map((role: UserRole) => ({ userId: id, role })),
+          data: roleRecords.map((r) => ({ userId: id, roleId: r.id })),
           skipDuplicates: true,
         });
       }
@@ -915,7 +937,7 @@ router.patch(
           activityLevel: true,
           emailVerified: true,
           phoneVerified: true,
-          userRoles: { select: { role: true } },
+          userRoles: { include: { roleRecord: true } },
           rideStats: { select: { totalRides: true } },
           createdAt: true,
           updatedAt: true,
@@ -984,10 +1006,23 @@ router.patch(
     const { id } = req.params;
     const { role } = req.body;
 
+    const targetRole = await prisma.role.findFirst({
+      where: {
+        OR: [
+          { slug: role.toLowerCase() },
+          { id: role },
+        ],
+      },
+    });
+
+    if (!targetRole) {
+      throw new Error("Role not found");
+    }
+
     // Upsert the role assignment (add if missing, no-op if exists)
     await prisma.userRoleAssignment.upsert({
-      where: { userId_role: { userId: id, role } },
-      create: { userId: id, role },
+      where: { userId_roleId: { userId: id, roleId: targetRole.id } },
+      create: { userId: id, roleId: targetRole.id },
       update: {},
     });
 
@@ -998,11 +1033,11 @@ router.patch(
         id: true,
         email: true,
         name: true,
-        userRoles: { select: { role: true } },
+        userRoles: { include: { roleRecord: true } },
       },
     });
 
-    const roles = user?.userRoles.map((r) => r.role) ?? [];
+    const roles = user?.userRoles.map((r) => r.roleRecord.slug.toUpperCase()) ?? [];
     ApiResponse.success(
       res,
       { user: { id: user?.id, email: user?.email, name: user?.name, roles } },
@@ -2036,6 +2071,13 @@ router.post(
       );
     }
 
+    const defaultMemberRole = await prisma.role.findFirst({
+      where: { slug: "member", scope: "CLUB" },
+    }) || await prisma.role.findFirst({
+      where: { slug: "member" },
+    });
+    const memberRoleId = defaultMemberRole?.id || "role-member";
+
     await prisma.$transaction(async (tx) => {
       await tx.clubJoinRequest.update({
         where: { id: requestId },
@@ -2052,7 +2094,7 @@ router.post(
         create: {
           clubId: joinRequest.clubId,
           userId: joinRequest.userId,
-          role: "MEMBER",
+          roleId: memberRoleId,
         },
         update: {},
       });
@@ -2295,6 +2337,13 @@ router.post(
       select: { id: true, clubId: true, userId: true },
     });
 
+    const defaultMemberRole = await prisma.role.findFirst({
+      where: { slug: "member", scope: "CLUB" },
+    }) || await prisma.role.findFirst({
+      where: { slug: "member" },
+    });
+    const memberRoleId = defaultMemberRole?.id || "role-member";
+
     await prisma.$transaction(async (tx) => {
       await tx.clubJoinRequest.updateMany({
         where: { id: { in: requests.map((r) => r.id) } },
@@ -2303,7 +2352,7 @@ router.post(
       for (const r of requests) {
         await tx.clubMember.upsert({
           where: { clubId_userId: { clubId: r.clubId, userId: r.userId } },
-          create: { userId: r.userId, clubId: r.clubId, role: "MEMBER" },
+          create: { userId: r.userId, clubId: r.clubId, roleId: memberRoleId },
           update: {},
         });
       }

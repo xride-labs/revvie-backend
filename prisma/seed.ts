@@ -174,6 +174,29 @@ function coordsNear(
   };
 }
 
+async function getOrCreateRole(
+  slug: string,
+  scope: "GLOBAL" | "CLUB" = "GLOBAL",
+  name?: string,
+): Promise<string> {
+  const existing = await prisma.role.findFirst({
+    where: { slug: slug.toLowerCase(), scope, scopeId: null },
+    select: { id: true },
+  });
+  if (existing) return existing.id;
+  const created = await prisma.role.create({
+    data: {
+      name: name || slug.toUpperCase(),
+      slug: slug.toLowerCase(),
+      scope,
+      isSystem: true,
+      color: scope === "CLUB" ? "#3B82F6" : "#F97316",
+    },
+    select: { id: true },
+  });
+  return created.id;
+}
+
 async function ensureGoogleAdminSeedUser(): Promise<void> {
   const googleAdmin = await prisma.user.upsert({
     where: { email: GOOGLE_ADMIN_EMAIL },
@@ -192,15 +215,20 @@ async function ensureGoogleAdminSeedUser(): Promise<void> {
     },
   });
 
+  const superAdminRoleId = await getOrCreateRole("super_admin", "GLOBAL", "Super Administrator");
+  const adminRoleId = await getOrCreateRole("admin", "GLOBAL", "Administrator");
+  const riderRoleId = await getOrCreateRole("rider", "GLOBAL", "Active Rider");
+
   await prisma.userRoleAssignment.createMany({
     data: [
-      { userId: googleAdmin.id, role: "ADMIN" as const },
-      { userId: googleAdmin.id, role: "RIDER" as const },
+      { userId: googleAdmin.id, roleId: superAdminRoleId },
+      { userId: googleAdmin.id, roleId: adminRoleId },
+      { userId: googleAdmin.id, roleId: riderRoleId },
     ],
     skipDuplicates: true,
   });
 
-  console.log(`✅ Ensured ${GOOGLE_ADMIN_EMAIL} has ADMIN + RIDER roles`);
+  console.log(`✅ Ensured ${GOOGLE_ADMIN_EMAIL} has SUPER_ADMIN + ADMIN + RIDER roles`);
 }
 
 async function seedProductionAdmin(passwordHash: string): Promise<void> {
@@ -256,10 +284,17 @@ async function seedProductionAdmin(passwordHash: string): Promise<void> {
 
   await ensureGoogleAdminSeedUser();
 
+  const superAdminRoleId = await getOrCreateRole("super_admin", "GLOBAL", "Super Administrator");
+  const adminRoleId = await getOrCreateRole("admin", "GLOBAL", "Administrator");
+  const clubOwnerRoleId = await getOrCreateRole("club_owner", "GLOBAL", "Club Owner");
+  const riderRoleId = await getOrCreateRole("rider", "GLOBAL", "Active Rider");
+
   await prisma.userRoleAssignment.createMany({
     data: [
-      { userId: adminUser.id, role: "ADMIN" as const },
-      { userId: adminUser.id, role: "CLUB_OWNER" as const },
+      { userId: adminUser.id, roleId: superAdminRoleId },
+      { userId: adminUser.id, roleId: adminRoleId },
+      { userId: adminUser.id, roleId: clubOwnerRoleId },
+      { userId: adminUser.id, roleId: riderRoleId },
     ],
     skipDuplicates: true,
   });
@@ -349,9 +384,12 @@ async function main() {
     passwordHash: string,
   ) {
     const user = await prisma.user.create({ data });
-    await prisma.userRoleAssignment.createMany({
-      data: roles.map((role) => ({ userId: user.id, role: role as any })),
-    });
+    for (const roleSlug of roles) {
+      const roleId = await getOrCreateRole(roleSlug.toLowerCase(), "GLOBAL");
+      await prisma.userRoleAssignment.create({
+        data: { userId: user.id, roleId },
+      });
+    }
     await prisma.account.create({
       data: {
         userId: user.id,
@@ -1077,12 +1115,17 @@ async function main() {
   console.log(`✅ Created ${clubs.length} clubs`);
 
   // Club members
+  const ownerRoleId = await getOrCreateRole("owner", "CLUB", "Founder / Owner");
+  const adminRoleId = await getOrCreateRole("admin", "CLUB", "Club Admin");
+  const captainRoleId = await getOrCreateRole("ride_captain", "CLUB", "Ride Captain");
+  const memberRoleId = await getOrCreateRole("member", "CLUB", "Club Member");
+
   const clubMemberMap = new Map<string, any>();
   for (const club of clubs) {
     clubMemberMap.set(`${club.id}:${club.ownerId}`, {
       clubId: club.id,
       userId: club.ownerId,
-      role: "FOUNDER",
+      roleId: ownerRoleId,
     });
     for (let j = 0; j < Math.floor(Math.random() * 6) + 2; j++) {
       const userId = allUsers[Math.floor(Math.random() * allUsers.length)].id;
@@ -1091,7 +1134,7 @@ async function main() {
         clubMemberMap.set(key, {
           clubId: club.id,
           userId,
-          role: ["MEMBER", "OFFICER", "ADMIN"][Math.floor(Math.random() * 3)],
+          roleId: [memberRoleId, captainRoleId, adminRoleId][Math.floor(Math.random() * 3)],
         });
       }
     }
