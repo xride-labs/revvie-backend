@@ -1,0 +1,14 @@
+node_modules
+dist
+.env
+.env.*
+*.log
+.git
+.github
+.vscode
+.idea
+*.md
+coverage
+.nyc_output
+.turbo
+*.tsbuildinfo

@@ -36,7 +36,9 @@ import {
   expenseRoutes,
   savedRoutes,
   weatherRoutes,
+  analyticsRoutes,
 } from "./routes/index.js";
+import { metricsMiddleware, metricsHandler } from "./lib/metrics.js";
 import {
   initializeScheduledJobs,
   initializeSelfPing,
@@ -81,6 +83,9 @@ app.set("trust proxy", isProduction ? 1 : false);
 
 // Apply CORS configuration
 app.use(cors(CORS_OPTIONS));
+
+// Prometheus metrics middleware — measures requests and latencies across all routes
+app.use(metricsMiddleware);
 
 // Rate limiting — protect against brute-force and DoS
 
@@ -259,6 +264,9 @@ setupSwagger(app);
  */
 app.get("/health", healthHandler);
 
+// Prometheus metrics scrape endpoint
+app.get("/metrics", metricsHandler);
+
 // Account routes (profile, verify-email, change-password)
 app.use("/api/account", accountRoutes);
 app.use("/api/users", userRoutes);
@@ -283,6 +291,7 @@ app.use("/api/catalog", catalogRoutes);
 app.use("/api/expenses", expenseRoutes);
 app.use("/api/saved", savedRoutes);
 app.use("/api/weather", weatherRoutes);
+app.use("/api/analytics", analyticsRoutes);
 
 // Base URL welcome page
 app.get("/", (req: Request, res: Response) => {

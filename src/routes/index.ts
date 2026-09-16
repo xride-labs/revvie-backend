@@ -20,3 +20,4 @@ export { catalogRoutes } from "./catalog/index.js";
 export { default as expenseRoutes } from "./expense/expense.routes.js";
 export { default as savedRoutes } from "./saved/saved.routes.js";
 export { default as weatherRoutes } from "./weather/weather.routes.js";
+export { default as analyticsRoutes } from "./analytics/analytics.routes.js";
