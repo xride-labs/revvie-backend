@@ -340,22 +340,31 @@ export async function cleanupExpiredSessions(): Promise<{ deleted: number }> {
  */
 export async function updateUserStatistics(): Promise<{ updated: number }> {
   try {
-    // Update rides completed count for all users
-    const users = await prisma.user.findMany({
-      select: { id: true },
-    });
+    // Previously: 1 query for all user ids, then 2 sequential round trips
+    // (a count + an upsert) PER user in a plain for-loop — 1 + 2N total,
+    // fully serial. Replaced the per-user count with a single groupBy that
+    // returns completed-ride counts for every user in one query; the
+    // upserts still have to happen per-row (Prisma has no bulk upsert with
+    // per-row differing values), but that's now 1 + N round trips instead
+    // of 1 + 2N, and the N reads that dominated runtime are gone entirely.
+    const [users, completedCounts] = await Promise.all([
+      prisma.user.findMany({ select: { id: true } }),
+      prisma.rideParticipant.groupBy({
+        by: ["userId"],
+        where: { status: "COMPLETED" },
+        _count: true,
+      }),
+    ]);
+
+    const countByUserId = new Map(
+      completedCounts.map((c) => [c.userId, c._count]),
+    );
 
     let updated = 0;
 
     for (const user of users) {
-      const ridesCount = await prisma.rideParticipant.count({
-        where: {
-          userId: user.id,
-          status: "COMPLETED",
-        },
-      });
+      const ridesCount = countByUserId.get(user.id) ?? 0;
 
-      // Upsert UserRideStats to update totalRides
       await prisma.userRideStats.upsert({
         where: { userId: user.id },
         update: { totalRides: ridesCount },

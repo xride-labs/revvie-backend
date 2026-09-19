@@ -177,8 +177,13 @@ async function queryNearbyRides(q: FeedQuery) {
       _count: { select: { participants: true } },
     },
     orderBy: { createdAt: "desc" },
-    // Fetch more than limit so we can score & re-rank in-memory
-    take: limit * 3,
+    // Fetch more than limit so we can score & re-rank in-memory. Must scale
+    // with `skip`, not just `limit` — this query always fetches the same
+    // top window by createdAt regardless of page, so `skip` was previously
+    // only applied to the in-memory slice below: once skip exceeded however
+    // many rows survived the Haversine/status filtering, every later page
+    // silently returned an empty result, forever, with no error.
+    take: skip + limit * 3,
   });
 
   // Score & filter by precise Haversine distance
@@ -228,7 +233,9 @@ async function queryUpcomingRides(q: FeedQuery) {
       _count: { select: { participants: true } },
     },
     orderBy: { scheduledAt: "asc" },
-    take: limit * 3,
+    // See queryNearbyRides above — take must scale with skip or deep pages
+    // silently return empty results.
+    take: skip + limit * 3,
   });
 
   const scored: FeedItem[] = [];
@@ -280,7 +287,9 @@ async function queryNearbyClubs(q: FeedQuery) {
       _count: { select: { members: true } },
     },
     orderBy: { memberCount: "desc" },
-    take: limit * 3,
+    // See queryNearbyRides above — take must scale with skip or deep pages
+    // silently return empty results.
+    take: skip + limit * 3,
   });
 
   const scored: FeedItem[] = [];
@@ -398,7 +407,9 @@ async function queryNearbyListings(q: FeedQuery) {
       seller: { select: { id: true, name: true, avatar: true } },
     },
     orderBy: { createdAt: "desc" },
-    take: limit * 2,
+    // See queryNearbyRides above — take must scale with skip or deep pages
+    // silently return empty results.
+    take: skip + limit * 2,
   });
 
   const results: FeedItem[] = [];
@@ -439,7 +450,9 @@ async function queryNearbyBusinesses(q: FeedQuery) {
       verification: "APPROVED",
     },
     orderBy: { createdAt: "desc" },
-    take: limit * 3,
+    // See queryNearbyRides above — take must scale with skip or deep pages
+    // silently return empty results.
+    take: skip + limit * 3,
   });
 
   const results: FeedItem[] = [];

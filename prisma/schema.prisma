@@ -194,6 +194,9 @@ model User {
   savedPlaceLists       SavedPlaceList[]
   savedPlaceListMembers SavedPlaceListMember[]
 
+  // Supports the leaderboard's ORDER BY xpPoints DESC, level DESC, createdAt ASC
+  // (user.controller.ts getLeaderboard) — previously an unindexed full sort.
+  @@index([xpPoints(sort: Desc), level(sort: Desc), createdAt], map: "users_xp_leaderboard_idx")
   @@map("users")
 }
 
@@ -850,6 +853,12 @@ model Ride {
   @@index([latitude, longitude], map: "rides_geo_idx")
   @@index([status, scheduledAt], map: "rides_status_scheduled_idx")
   @@index([createdAt], map: "rides_created_idx")
+  // getMyRides (ride.controller.ts) filters creatorId [+ status], orders by
+  // endedAt desc — no existing index covers creatorId at all.
+  @@index([creatorId, status, endedAt(sort: Desc)], map: "rides_creator_status_ended_idx")
+  // Monthly leaderboard (user.controller.ts) filters status="COMPLETED" +
+  // endedAt >= startOfMonth — distinct from the scheduledAt index above.
+  @@index([status, endedAt], map: "rides_status_ended_idx")
   @@map("rides")
 }
 
@@ -1240,6 +1249,9 @@ model RideParticipant {
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@unique([rideId, userId])
+  // The unique above leads with rideId, so it doesn't serve userId-only
+  // lookups — hit once per rider on every ride-end (xp.ts evaluateAndAwardRideBadges).
+  @@index([userId, status], map: "ride_participants_user_status_idx")
   @@map("ride_participants")
 }
 

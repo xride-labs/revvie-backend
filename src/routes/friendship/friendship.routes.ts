@@ -402,7 +402,21 @@ router.patch(
     const updated = await prisma.friendship.update({
       where: { id: req.params.id },
       data: { status: "DECLINED" },
+      include: {
+        receiver: { select: { id: true, name: true, username: true } },
+      },
     });
+
+    const declinerName =
+      updated.receiver?.name || updated.receiver?.username || "A rider";
+    createNotification({
+      userId: updated.senderId,
+      type: "FRIEND_REQUEST",
+      title: `${declinerName} declined your friend request`,
+      message: "Friend request was not accepted.",
+      relatedType: "user",
+      relatedId: userId,
+    }).catch((err) => console.error("[friendship] decline notify failed:", err));
 
     return ApiResponse.success(
       res,

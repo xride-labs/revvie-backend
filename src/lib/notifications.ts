@@ -144,12 +144,21 @@ export async function createNotification(
 
   if (input.skipPush) return;
 
-  // SOS_ALERT is safety-critical: push even if the user is online.
-  // All other types: push only if the user is offline (socket not connected).
-  const isSos = input.type === NotificationType.SOS_ALERT;
-  const userOnline = !isSos && isUserOnline(input.userId);
+  // SOS_ALERT, friend requests, ride invites, club invites and direct messages
+  // are actionable and should always reach the user's device push notification tray.
+  // Low-priority ambient events (like, comment) are only sent if user is offline or not skipPush.
+  const isHighPriority =
+    input.type === NotificationType.SOS_ALERT ||
+    input.type === NotificationType.FRIEND_REQUEST ||
+    input.type === NotificationType.RIDE_INVITE ||
+    input.type === NotificationType.RIDE_JOINED ||
+    input.type === NotificationType.CLUB_INVITE ||
+    input.type === NotificationType.CLUB_REQUEST ||
+    input.type === NotificationType.MESSAGE ||
+    input.type === NotificationType.LISTING_OFFER;
 
-  if (userOnline) return;
+  const shouldSendPush = isHighPriority || !isUserOnline(input.userId);
+  if (!shouldSendPush) return;
 
   // Respect the user's push-notification preference (cached 60 s).
   const pushEnabled = await getPushEnabled(input.userId);
@@ -231,13 +240,21 @@ export async function createNotifications(
   );
 
   // Determine which users should receive a push:
-  // • SOS_ALERT bypasses the online check (safety-critical).
-  // • All other types: push only if user is offline.
+  // • Actionable/high-priority types (SOS, friend requests, invites, messages) always push.
+  // • Other ambient types: push only if user is offline.
   // • Always respect the per-user push preference.
   const pushCandidateInputs = inputs.filter((input) => {
     if (input.skipPush) return false;
-    const isSos = input.type === NotificationType.SOS_ALERT;
-    return isSos || !isUserOnline(input.userId);
+    const isHighPriority =
+      input.type === NotificationType.SOS_ALERT ||
+      input.type === NotificationType.FRIEND_REQUEST ||
+      input.type === NotificationType.RIDE_INVITE ||
+      input.type === NotificationType.RIDE_JOINED ||
+      input.type === NotificationType.CLUB_INVITE ||
+      input.type === NotificationType.CLUB_REQUEST ||
+      input.type === NotificationType.MESSAGE ||
+      input.type === NotificationType.LISTING_OFFER;
+    return isHighPriority || !isUserOnline(input.userId);
   });
 
   if (!pushCandidateInputs.length) return;

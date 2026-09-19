@@ -82,27 +82,33 @@ export async function awardDirectXp(
   if (amount <= 0) return null;
 
   try {
-    const user = await prisma.user.findUnique({
+    // Atomic increment (was: read xpPoints, add in JS, write the sum back —
+    // a classic lost-update race if two awards land for the same user
+    // close together, e.g. two rides ending near-simultaneously; one
+    // award's write could silently overwrite the other's). This also drops
+    // the round trip count from 2 to 1 in the common case (no level change).
+    const updated = await prisma.user.update({
       where: { id: userId },
-      select: { xpPoints: true, level: true, levelTitle: true },
+      data: { xpPoints: { increment: amount } },
+      select: { xpPoints: true, level: true },
     });
-    if (!user) return null;
 
-    const newXp = (user.xpPoints ?? 0) + amount;
+    const newXp = updated.xpPoints ?? amount;
     const { level, title } = levelForXp(newXp);
+    const previousLevel = updated.level ?? 1;
 
-    await prisma.user.update({
-      where: { id: userId },
-      data: {
-        xpPoints: newXp,
-        level,
-        levelTitle: title,
-      },
-    });
-
-    if (level > (user.level ?? 1)) {
+    // Only write level/levelTitle when they actually changed. Under true
+    // concurrent awards to the same user this second write isn't itself
+    // atomic with xpPoints, so level can very rarely lag by one write — it
+    // self-corrects on the next award. Far narrower than the previous bug,
+    // which could drop an entire XP amount.
+    if (level !== previousLevel) {
+      await prisma.user.update({
+        where: { id: userId },
+        data: { level, levelTitle: title },
+      });
       console.log(
-        `[xp] user ${userId} leveled up: ${user.level} → ${level} (${title})`,
+        `[xp] user ${userId} leveled up: ${previousLevel} → ${level} (${title})`,
         reason ? `via ${reason}` : "",
       );
     }

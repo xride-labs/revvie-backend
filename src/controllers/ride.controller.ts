@@ -823,52 +823,69 @@ export class RideController {
       // Distinct list including creator
       const riderIds = Array.from(new Set([userId, ...participants.map((p) => p.userId)]));
 
-      for (const riderId of riderIds) {
-        const isLead = riderId === result.ride.creatorId;
+      // Riders processed concurrently — each rider's own steps stay
+      // sequential internally (read-then-write on their own stats row), but
+      // riders no longer block each other. Previously a plain sequential
+      // for-loop meant ~8 DB round trips per rider, entirely serialized —
+      // for a full group ride (12-rider free-tier cap) that was 100+
+      // sequential round trips before the response could be sent. Each
+      // rider's block is isolated in its own try/catch: Promise.all rejects
+      // on the first failure, but unlike the old for-loop (where a throw
+      // stopped every later rider from being processed at all), the other
+      // riders' in-flight work here isn't cancelled — isolating errors here
+      // just keeps that failure from also rejecting the whole batch.
+      await Promise.all(
+        riderIds.map(async (riderId) => {
+          try {
+            const isLead = riderId === result.ride.creatorId;
 
-        // Update UserRideStats atomically
-        const existingStats = await prisma.userRideStats.findUnique({
-          where: { userId: riderId },
-        });
+            // Update UserRideStats atomically
+            const existingStats = await prisma.userRideStats.findUnique({
+              where: { userId: riderId },
+            });
 
-        const newTotalKm = (existingStats?.totalDistanceKm ?? 0) + Math.round(distanceKm);
-        const longest = Math.max(existingStats?.longestRideKm ?? 0, Math.round(distanceKm));
-        const totalRides = (existingStats?.totalRides ?? 0) + 1;
-        const nightCount = (existingStats?.nightRides ?? 0) + (isNight ? 1 : 0);
+            const newTotalKm = (existingStats?.totalDistanceKm ?? 0) + Math.round(distanceKm);
+            const longest = Math.max(existingStats?.longestRideKm ?? 0, Math.round(distanceKm));
+            const totalRides = (existingStats?.totalRides ?? 0) + 1;
+            const nightCount = (existingStats?.nightRides ?? 0) + (isNight ? 1 : 0);
 
-        await prisma.userRideStats.upsert({
-          where: { userId: riderId },
-          create: {
-            userId: riderId,
-            totalDistanceKm: Math.round(distanceKm),
-            longestRideKm: Math.round(distanceKm),
-            totalRides: 1,
-            nightRides: isNight ? 1 : 0,
-          },
-          update: {
-            totalDistanceKm: newTotalKm,
-            longestRideKm: longest,
-            totalRides,
-            nightRides: nightCount,
-          },
-        });
+            await prisma.userRideStats.upsert({
+              where: { userId: riderId },
+              create: {
+                userId: riderId,
+                totalDistanceKm: Math.round(distanceKm),
+                longestRideKm: Math.round(distanceKm),
+                totalRides: 1,
+                nightRides: isNight ? 1 : 0,
+              },
+              update: {
+                totalDistanceKm: newTotalKm,
+                longestRideKm: longest,
+                totalRides,
+                nightRides: nightCount,
+              },
+            });
 
-        // Award verified distance XP (1 XP per km) + completion bonus
-        await awardDistanceXp(riderId, distanceKm, `Ride: ${result.ride.title || id}`);
-        await awardXp(riderId, "RIDE_COMPLETED", `ride ${id}`);
+            // Award verified distance XP (1 XP per km) + completion bonus
+            await awardDistanceXp(riderId, distanceKm, `Ride: ${result.ride.title || id}`);
+            await awardXp(riderId, "RIDE_COMPLETED", `ride ${id}`);
 
-        if (isLead && riderIds.length > 1) {
-          await awardXp(riderId, "GROUP_RIDE_LEAD", `led ride ${id}`);
-        }
+            if (isLead && riderIds.length > 1) {
+              await awardXp(riderId, "GROUP_RIDE_LEAD", `led ride ${id}`);
+            }
 
-        // Evaluate motorcycle mastery badges
-        await evaluateAndAwardRideBadges(riderId, {
-          distanceKm,
-          elevationM,
-          isNight,
-          isLead,
-        });
-      }
+            // Evaluate motorcycle mastery badges
+            await evaluateAndAwardRideBadges(riderId, {
+              distanceKm,
+              elevationM,
+              isNight,
+              isLead,
+            });
+          } catch (riderErr) {
+            console.error(`[RIDE_END] rewards/stats update failed for rider ${riderId}`, riderErr);
+          }
+        }),
+      );
     } catch (err) {
       console.error("[RIDE_END] post-completion rewards and stats update failed", err);
     }
