@@ -274,6 +274,9 @@ export const createClubSchema = z.object({
   requiresLicense: z.boolean().default(false),
   image: z.string().url("Invalid image URL").optional(),
   coverImage: z.string().url("Invalid cover image URL").optional(),
+  gallery: z.array(z.string().url()).optional(),
+  joinPolicy: z.enum(["OPEN", "APPLICATION", "INVITE_ONLY"]).optional(),
+  joinQuestions: z.any().optional(),
   latitude: z.number().min(-90).max(90).optional(),
   longitude: z.number().min(-180).max(180).optional(),
 });

@@ -42,7 +42,8 @@ async function runE2E() {
     const template = buildWelcomeTemplate({
       name: 'Krithik (Admin)',
       appUrl: cachedFresh.siteUrl,
-    }, cachedFresh)
+      branding: cachedFresh,
+    })
 
     const sent = await sendEmail({
       to: 'creativekrithik@gmail.com',
@@ -50,7 +51,6 @@ async function runE2E() {
       html: template.html,
       text: template.text,
       tags: ['brand-e2e-test'],
-      branding: cachedFresh,
     })
 
     if (!sent) {
