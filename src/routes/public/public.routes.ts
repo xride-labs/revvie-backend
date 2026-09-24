@@ -12,9 +12,12 @@ import { z } from "zod";
 import { requireMarketplaceEnabled } from "../../middlewares/appSettings.js";
 import { sendEmail } from "../../lib/mailer.js";
 import { buildMarketplaceContactTemplate } from "../../lib/emailTemplates.js";
+import publicBrandingRouter from "./public.branding.routes.js";
 
 const router = Router();
 const isProduction = process.env.NODE_ENV === "production";
+
+router.use("/", publicBrandingRouter);
 
 const idParam = z.object({ id: z.string().min(1) });
 

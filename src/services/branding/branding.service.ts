@@ -1,5 +1,5 @@
 import { prisma } from "../../lib/prisma.js";
-import { uploadMedia, MediaType } from "../../lib/cloudinary.js";
+import { uploadMedia, MediaType, MediaFolder } from "../../lib/cloudinary.js";
 import {
   BrandingConfig,
   UpdateBrandingDTO,
@@ -187,7 +187,8 @@ export async function uploadBrandAsset(
   assetType: "logo" | "icon" | "favicon"
 ): Promise<{ url: string; secureUrl: string; publicId: string }> {
   const result = await uploadMedia(fileBase64, {
-    folder: `revvie/branding/${assetType}`,
+    folder: MediaFolder.BRANDING,
+    publicId: `${assetType}_${Date.now()}`,
     resourceType: MediaType.IMAGE,
   });
 

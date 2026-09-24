@@ -35,6 +35,7 @@ import {
 } from "../../lib/adminSettings.js";
 import adminCommerceRouter from "./admin.commerce.routes.js";
 import adminRolesRouter from "./roles.routes.js";
+import adminBrandingRouter from "./admin.branding.routes.js";
 
 const router = Router();
 
@@ -43,6 +44,7 @@ const router = Router();
 // sub-router applies cleanly without depending on this file's route order.
 router.use("/", adminCommerceRouter);
 router.use("/", adminRolesRouter);
+router.use("/", adminBrandingRouter);
 
 const PRIVILEGED_ADMIN_ROLES: string[] = [
   "SUPER_ADMIN",

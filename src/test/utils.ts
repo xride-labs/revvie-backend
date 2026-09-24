@@ -247,11 +247,25 @@ export async function addRideParticipant(
 export async function createAdminUser(userData?: Partial<any>) {
   const admin = await createTestUser(userData);
 
+  let adminRole = await prisma.role.findFirst({
+    where: { slug: "admin" },
+  });
+  if (!adminRole) {
+    adminRole = await prisma.role.create({
+      data: {
+        name: "Admin",
+        slug: "admin",
+        scope: "PLATFORM",
+        isSystem: true,
+      },
+    });
+  }
+
   // Assign ADMIN role
   await prisma.userRoleAssignment.create({
     data: {
       userId: admin.user.id,
-      role: "ADMIN",
+      roleId: adminRole.id,
     },
   });
 

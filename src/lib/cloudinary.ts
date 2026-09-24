@@ -62,6 +62,7 @@ export enum MediaFolder {
   RIDES = "revvie/rides",
   LISTINGS = "revvie/marketplace",
   POSTS = "revvie/posts",
+  BRANDING = "revvie/branding",
 }
 
 /**
@@ -181,6 +182,11 @@ const IMAGE_POLICIES: Record<MediaFolder, MediaPolicy> = {
     maxBytes: 10 * MB,
     allowedMimeTypes: [...IMAGE_MIME_TYPES],
     allowedFormats: ["jpg", "jpeg", "png", "webp"],
+  },
+  [MediaFolder.BRANDING]: {
+    maxBytes: 5 * MB,
+    allowedMimeTypes: [...IMAGE_MIME_TYPES, "image/svg+xml"],
+    allowedFormats: ["jpg", "jpeg", "png", "webp", "svg"],
   },
 };
 
