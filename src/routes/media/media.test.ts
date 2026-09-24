@@ -14,6 +14,7 @@ import {
   cleanupTestData,
   assertValidSuccessResponse,
 } from "../../test/utils";
+import prisma from "../../lib/prisma.js";
 
 // Replace the Cloudinary network calls with fakes so uploads/deletes are
 // deterministic and offline. importActual keeps the real enums, the
@@ -117,6 +118,30 @@ describe("Media Routes", () => {
           type: "image",
           folder: "listings",
           resourceId: listing.id,
+        });
+
+      expect([200, 201]).toContain(res.status);
+    });
+
+    it("should upload business image", async () => {
+      const { token, user } = await createTestUser();
+      const business = await prisma.businessProfile.create({
+        data: {
+          ownerId: user.id,
+          displayName: "Test Garage",
+          slug: `test-garage-${Date.now()}`,
+          categories: ["SERVICE_STORE"],
+        },
+      });
+
+      const res = await request(app)
+        .post("/api/media/upload")
+        .set("Authorization", `Bearer ${token}`)
+        .send({
+          file: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
+          type: "image",
+          folder: "businesses",
+          resourceId: business.id,
         });
 
       expect([200, 201]).toContain(res.status);

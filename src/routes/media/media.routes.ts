@@ -1,7 +1,7 @@
 import { Router, Request, Response } from "express";
 import { requireAuth } from "../../config/auth.js";
 import { ApiResponse, ErrorCode } from "../../lib/utils/apiResponse.js";
-import { validateBody, asyncHandler } from "../../middlewares/validation.js";
+import { validateBody, validateParams, asyncHandler } from "../../middlewares/validation.js";
 import { uploadMediaSchema } from "../../validators/schemas.js";
 import { z } from "zod";
 import {
@@ -15,6 +15,8 @@ import {
   uploadRideMedia,
   uploadListingMedia,
   uploadPostMedia,
+  uploadBusinessLogo,
+  uploadBusinessBanner,
   deleteMedia,
   generateUploadSignature,
   MediaFolder,
@@ -221,6 +223,35 @@ router.post(
             resourceId,
             type === "video" ? MediaType.VIDEO : MediaType.IMAGE,
           );
+          break;
+        case "businesses":
+          if (!resourceId) {
+            return ApiResponse.error(
+              res,
+              "Resource ID is required for business uploads",
+              400,
+              ErrorCode.MISSING_REQUIRED_FIELD,
+            );
+          }
+          const business = await prisma.businessProfile.findUnique({
+            where: { id: resourceId },
+          });
+          if (!business) {
+            return ApiResponse.notFound(res, "Business profile not found");
+          }
+          if (req.body.subtype === "banner" || req.body.type === "banner") {
+            result = await uploadBusinessBanner(file, resourceId);
+            await prisma.businessProfile.update({
+              where: { id: resourceId },
+              data: { bannerUrl: result.secureUrl },
+            });
+          } else {
+            result = await uploadBusinessLogo(file, resourceId);
+            await prisma.businessProfile.update({
+              where: { id: resourceId },
+              data: { logoUrl: result.secureUrl },
+            });
+          }
           break;
         default:
           return ApiResponse.error(
@@ -745,6 +776,100 @@ router.post(
         error,
         "Failed to upload club gallery image",
       );
+    }
+  }),
+);
+
+/**
+ * @swagger
+ * /api/media/upload/business/{businessId}:
+ *   post:
+ *     summary: Upload business logo or banner
+ *     description: Upload logo or banner for a business.
+ *     tags: [Media]
+ *     security:
+ *       - cookieAuth: []
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: businessId
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Business Profile ID
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - file
+ *             properties:
+ *               file:
+ *                 type: string
+ *                 description: Base64 encoded image
+ *               type:
+ *                 type: string
+ *                 enum: [logo, banner]
+ *                 default: logo
+ *     responses:
+ *       200:
+ *         description: Business asset uploaded successfully
+ */
+router.post(
+  "/upload/business/:businessId",
+  validateParams(z.object({ businessId: z.string() })),
+  validateBody(
+    z.object({
+      file: z.string().min(1, "File is required"),
+      type: z.enum(["logo", "banner"]).default("logo"),
+    }),
+  ),
+  asyncHandler(async (req: Request, res: Response) => {
+    const session = (req as any).session;
+    const { businessId } = req.params;
+    const { file, type } = req.body;
+
+    const business = await prisma.businessProfile.findUnique({
+      where: { id: businessId },
+    });
+
+    if (!business) {
+      return ApiResponse.notFound(res, "Business profile not found");
+    }
+
+    if (business.ownerId !== session.user.id && !isStaff(session.user.roles)) {
+      return ApiResponse.forbidden(
+        res,
+        "You don't have permission to upload assets for this business",
+      );
+    }
+
+    try {
+      let result;
+      if (type === "banner") {
+        result = await uploadBusinessBanner(file, businessId);
+        await prisma.businessProfile.update({
+          where: { id: businessId },
+          data: { bannerUrl: result.secureUrl },
+        });
+      } else {
+        result = await uploadBusinessLogo(file, businessId);
+        await prisma.businessProfile.update({
+          where: { id: businessId },
+          data: { logoUrl: result.secureUrl },
+        });
+      }
+
+      ApiResponse.success(
+        res,
+        { media: result, imageUrl: result.secureUrl },
+        `Business ${type} uploaded successfully`,
+      );
+    } catch (error) {
+      console.error("Business upload error:", error);
+      return respondUploadError(res, error, `Failed to upload business ${type}`);
     }
   }),
 );

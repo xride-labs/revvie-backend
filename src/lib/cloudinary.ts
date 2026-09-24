@@ -63,6 +63,7 @@ export enum MediaFolder {
   LISTINGS = "revvie/marketplace",
   POSTS = "revvie/posts",
   BRANDING = "revvie/branding",
+  BUSINESSES = "revvie/businesses",
 }
 
 /**
@@ -187,6 +188,11 @@ const IMAGE_POLICIES: Record<MediaFolder, MediaPolicy> = {
     maxBytes: 5 * MB,
     allowedMimeTypes: [...IMAGE_MIME_TYPES, "image/svg+xml"],
     allowedFormats: ["jpg", "jpeg", "png", "webp", "svg"],
+  },
+  [MediaFolder.BUSINESSES]: {
+    maxBytes: 10 * MB,
+    allowedMimeTypes: [...IMAGE_MIME_TYPES],
+    allowedFormats: ["jpg", "jpeg", "png", "webp"],
   },
 };
 
@@ -554,6 +560,35 @@ export async function uploadClubGallery(
     tags: [`club_${clubId}`],
     transformation: imageTransformations.gallery,
     eager: [imageTransformations.thumbnail],
+  });
+}
+
+/**
+ * Upload business logo
+ */
+export async function uploadBusinessLogo(
+  file: string,
+  businessId: string,
+): Promise<UploadResult> {
+  return uploadMedia(file, {
+    folder: MediaFolder.BUSINESSES,
+    publicId: `logo_${businessId}`,
+    transformation: imageTransformations.profile,
+    eager: [imageTransformations.thumbnail],
+  });
+}
+
+/**
+ * Upload business cover/banner
+ */
+export async function uploadBusinessBanner(
+  file: string,
+  businessId: string,
+): Promise<UploadResult> {
+  return uploadMedia(file, {
+    folder: MediaFolder.BUSINESSES,
+    publicId: `banner_${businessId}`,
+    transformation: imageTransformations.profileCover,
   });
 }
 

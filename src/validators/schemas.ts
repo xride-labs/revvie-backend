@@ -446,7 +446,7 @@ export const createCommentSchema = z.object({
 
 export const uploadMediaSchema = z.object({
   type: z.enum(["image", "video"]),
-  folder: z.enum(["profiles", "clubs", "rides", "listings", "posts"]),
+  folder: z.enum(["profiles", "clubs", "rides", "listings", "posts", "businesses"]),
 });
 
 // ========================================
