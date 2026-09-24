@@ -28,4 +28,5 @@ export async function connectPostgres(): Promise<void> {
   return postgresConnectPromise;
 }
 
+export { prisma };
 export default prisma;

@@ -251,11 +251,28 @@ model AdminSettings {
   id           String @id @default(cuid())
   scope        String @unique @default("global")
   siteName     String @default("Revvie") @map("site_name")
-  siteUrl      String @default("https://revvie.app") @map("site_url")
-  supportEmail String @default("support@revvie.app") @map("support_email")
-  timezone     String @default("America/Phoenix")
+  siteUrl      String @default("https://revvie.xride-labs.in") @map("site_url")
+  supportEmail String @default("hello@xride-labs.in") @map("support_email")
+  timezone     String @default("Asia/Kolkata")
+  tagline      String @default("RIDE • TRACK • CONNECT") @map("tagline")
 
   defaultCurrency String @default("INR") @map("default_currency")
+
+  // Dynamic Brand Assets (Cloudinary URLs)
+  logoUrl      String @default("https://res.cloudinary.com/xride-labs/image/upload/revvie/icon_f6occl.png") @map("logo_url")
+  iconUrl      String @default("https://res.cloudinary.com/xride-labs/image/upload/revvie/icon_f6occl.png") @map("icon_url")
+  faviconUrl   String? @map("favicon_url")
+
+  // Color Tokens ("One Red Light in a Black Garage")
+  primaryColor    String  @default("#ff1d2d") @map("primary_color")
+  deepColor       String  @default("#b3151f") @map("deep_color")
+  canvasColor     String  @default("#0d0d0f") @map("canvas_color")
+  surfaceColor    String  @default("#1c1c1e") @map("surface_color")
+  borderColor     String  @default("#3a3a3c") @map("border_color")
+
+  // Typography & Email Badges
+  fontFamily       String @default("Josefin Sans") @map("font_family")
+  emailHeaderBadge String @default("OFFICIAL DISPATCH") @map("email_header_badge")
 
   maintenanceMode     Boolean @default(false) @map("maintenance_mode")
   allowRegistration   Boolean @default(true) @map("allow_registration")
@@ -277,13 +294,12 @@ model AdminSettings {
   smtpPort            Int    @default(587) @map("smtp_port")
   smtpUser            String @default("apikey") @map("smtp_user")
   smtpPass            String @default("") @map("smtp_pass")
-  fromEmail           String @default("noreply@revvie.app") @map("from_email")
+  fromEmail           String @default("noreply@xride-labs.in") @map("from_email")
   fromName            String @default("Revvie") @map("from_name")
-  welcomeEmailSubject String @default("Welcome to Revvie!") @map("welcome_email_subject")
+  welcomeEmailSubject String @default("Welcome to Revvie 🏍️") @map("welcome_email_subject")
   welcomeEmailBody    String @default("Hi {{name}}, Welcome to Revvie!") @map("welcome_email_body")
 
-  primaryColor    String  @default("#f97316") @map("primary_color")
-  darkModeDefault Boolean @default(false) @map("dark_mode_default")
+  darkModeDefault Boolean @default(true) @map("dark_mode_default")
   compactMode     Boolean @default(false) @map("compact_mode")
 
   createdAt DateTime @default(now()) @map("created_at")
