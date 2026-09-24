@@ -9,6 +9,7 @@ import {
   buildWelcomeTemplate,
   buildMagicLinkTemplate,
 } from "./emailTemplates.js";
+import { getBrandingConfig } from "../services/branding/branding.service.js";
 
 export type EmailPayload = {
   to: string;
@@ -71,6 +72,13 @@ export function getEmailConfigStatus() {
 function logBrevoDeliveryHint(parsedBody: any) {
   const message = String(parsedBody?.message || "").toLowerCase();
 
+  if (message.includes("unrecognised ip") || message.includes("ip address")) {
+    console.warn(
+      `[Email] Brevo IP Authorization Error: ${parsedBody?.message || ""}`,
+    );
+    return;
+  }
+
   if (message.includes("sender")) {
     console.warn(
       "[Email] Brevo rejected sender identity. Verify BREVO_SENDER_EMAIL in Brevo senders/domains.",
@@ -85,8 +93,11 @@ function logBrevoDeliveryHint(parsedBody: any) {
 }
 
 export async function sendEmail(payload: EmailPayload): Promise<boolean> {
-  if (process.env.NODE_ENV === "development") {
-    console.log("\n[DEVELOPMENT] Email Sending is DISABLED");
+  const enableDevEmails = process.env.ENABLE_DEV_EMAILS === "true";
+  if (process.env.NODE_ENV === "development" && !enableDevEmails) {
+    console.log(
+      "\n[DEVELOPMENT] Email Sending is DISABLED (set ENABLE_DEV_EMAILS=true in .env to send real emails in dev)",
+    );
     console.log("[Email] Would have sent email:", {
       subject: payload.subject,
       to: payload.to,
@@ -107,10 +118,22 @@ export async function sendEmail(payload: EmailPayload): Promise<boolean> {
     return false;
   }
 
+  const branding = await getBrandingConfig().catch(() => null);
+  const effectiveSenderName =
+    process.env.BREVO_SENDER_NAME?.trim() ||
+    branding?.siteName ||
+    senderName;
+  const effectiveReplyTo =
+    payload.replyTo ||
+    branding?.supportEmail ||
+    fallbackReplyTo ||
+    senderEmail;
+
   console.log("[Email] Sending email", {
     subject: payload.subject,
     to: payload.to,
     senderEmail,
+    senderName: effectiveSenderName,
   });
   try {
     const response = await fetch(brevoApiUrl, {
@@ -123,18 +146,14 @@ export async function sendEmail(payload: EmailPayload): Promise<boolean> {
       body: JSON.stringify({
         sender: {
           email: senderEmail,
-          name: senderName,
+          name: effectiveSenderName,
         },
         to: [{ email: payload.to, name: payload.toName }],
         subject: payload.subject,
         htmlContent: payload.html,
         textContent: payload.text,
         tags: payload.tags,
-        replyTo: payload.replyTo
-          ? { email: payload.replyTo }
-          : fallbackReplyTo
-            ? { email: fallbackReplyTo }
-            : undefined,
+        replyTo: effectiveReplyTo ? { email: effectiveReplyTo } : undefined,
       }),
     });
 
@@ -192,9 +211,11 @@ export async function sendVerificationEmail(params: {
       ? `${appUrl}/verify-email?token=${params.token}&email=${encodedEmail}`
       : `${appUrl}/verify-email?email=${encodedEmail}`);
 
+  const branding = await getBrandingConfig().catch(() => undefined);
   const template = buildVerificationTemplate({
     name: params.name,
     verifyUrl,
+    branding,
   });
 
   return sendEmail({
@@ -213,10 +234,12 @@ export async function sendRideJoinRequestEmail(params: {
   requesterName: string;
   message?: string;
 }): Promise<boolean> {
+  const branding = await getBrandingConfig().catch(() => undefined);
   const template = buildRideJoinRequestTemplate({
     rideTitle: params.rideTitle,
     requesterName: params.requesterName,
     message: params.message,
+    branding,
   });
 
   return sendEmail({
@@ -235,10 +258,12 @@ export async function sendClubJoinEmail(params: {
 }): Promise<boolean> {
   const { appUrl } = getRuntimeEmailConfig();
 
+  const branding = await getBrandingConfig().catch(() => undefined);
   const template = buildClubJoinTemplate({
     clubName: params.clubName,
     memberName: params.memberName,
     clubsUrl: `${appUrl}/clubs`,
+    branding,
   });
 
   return sendEmail({
@@ -255,9 +280,11 @@ export async function sendAlertEmail(params: {
   subject: string;
   message: string;
 }): Promise<boolean> {
+  const branding = await getBrandingConfig().catch(() => undefined);
   const template = buildAlertTemplate({
     subject: params.subject,
     message: params.message,
+    branding,
   });
 
   return sendEmail({
@@ -280,9 +307,11 @@ export async function sendResetPasswordEmail(params: {
     console.log(`==================================\n`);
   }
 
+  const branding = await getBrandingConfig().catch(() => undefined);
   const template = buildResetPasswordTemplate({
     name: params.name,
     resetUrl: params.resetUrl,
+    branding,
   });
 
   return sendEmail({
@@ -301,9 +330,10 @@ export async function sendOtpEmail(params: {
   name?: string | null;
   isNewUser?: boolean;
 }): Promise<boolean> {
+  const branding = await getBrandingConfig().catch(() => undefined);
   const template = params.isNewUser
-    ? buildWelcomeOtpTemplate({ otp: params.otp })
-    : buildOtpTemplate({ name: params.name, otp: params.otp });
+    ? buildWelcomeOtpTemplate({ otp: params.otp, branding })
+    : buildOtpTemplate({ name: params.name, otp: params.otp, branding });
 
   return sendEmail({
     to: params.to,
@@ -321,9 +351,11 @@ export async function sendWelcomeEmail(params: {
 }): Promise<boolean> {
   const { appUrl } = getRuntimeEmailConfig();
 
+  const branding = await getBrandingConfig().catch(() => undefined);
   const template = buildWelcomeTemplate({
     name: params.name,
     appUrl,
+    branding,
   });
 
   return sendEmail({
@@ -341,9 +373,11 @@ export async function sendMagicLinkEmail(params: {
   name?: string | null;
   magicLinkUrl: string;
 }): Promise<boolean> {
+  const branding = await getBrandingConfig().catch(() => undefined);
   const template = buildMagicLinkTemplate({
     name: params.name,
     magicLinkUrl: params.magicLinkUrl,
+    branding,
   });
 
   return sendEmail({
