@@ -2,6 +2,7 @@ import cron from "node-cron";
 import prisma from "../lib/prisma.js";
 import { deleteMultipleMedia } from "../lib/cloudinary.js";
 import { notifyUsers } from "../lib/notifications.js";
+import { runDatabaseBackup } from "../services/backup/backup.service.js";
 
 /**
  * Configuration for ride cleanup
@@ -504,6 +505,22 @@ export function initializeScheduledJobs(): void {
   cron.schedule("30 3 * * *", async () => {
     await cleanupStaleDeviceTokens();
   });
+
+  // Automated database backup with change detection (defaults to 03:00 AM UTC daily)
+  const backupCron = process.env.BACKUP_CRON_SCHEDULE || "0 3 * * *";
+  const backupEnabled = process.env.BACKUP_ENABLED !== "false" && Boolean(process.env.BACKUP_DATABASE_URL);
+
+  if (backupEnabled) {
+    cron.schedule(backupCron, async () => {
+      console.log("[Jobs] Running scheduled database backup check...");
+      try {
+        await runDatabaseBackup();
+      } catch (err) {
+        console.error("[Jobs] Scheduled database backup encountered an error:", err);
+      }
+    });
+    console.log(`[Jobs] Scheduled database backup enabled with cadence: ${backupCron}`);
+  }
 
   console.log("[Jobs] All scheduled jobs initialized successfully");
 }

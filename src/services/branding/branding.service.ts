@@ -198,3 +198,10 @@ export async function uploadBrandAsset(
     publicId: result.publicId,
   };
 }
+
+export const brandingService = {
+  getBrandingConfig,
+  updateBrandingConfig,
+  uploadBrandAsset,
+  clearBrandingCache,
+};

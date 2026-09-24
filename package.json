@@ -25,6 +25,8 @@
     "seed:bikes": "tsx src/scripts/seed-bikes.ts",
     "db:reset": "bunx prisma migrate reset --force && bun run db:seed",
     "db:seed:prod": "NODE_ENV=production node dist/prisma/seed.js",
+    "db:backup": "tsx src/scripts/run-backup.ts",
+    "db:backup:force": "tsx src/scripts/run-backup.ts --force",
     "postinstall": "bun run prisma:generate",
     "lint": "eslint . --ext .ts",
     "lint:fix": "eslint . --ext .ts --fix",
@@ -33,7 +35,8 @@
     "test:routes": "vitest run src/routes",
     "test:smoke": "vitest run src/http.contract.test.ts",
     "test:watch": "vitest",
-    "test:coverage": "vitest run --coverage"
+    "test:coverage": "vitest run --coverage",
+    "test:email": "tsx src/scripts/test-email.ts"
   },
   "keywords": [
     "express",

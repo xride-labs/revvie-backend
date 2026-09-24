@@ -1,4 +1,18 @@
 import { z } from "zod";
+import {
+  DISPOSABLE_EMAIL_MESSAGE,
+  isDisposableEmail,
+} from "../lib/disposableEmail.js";
+
+// Rejects throwaway email services (Mailinator, TempMail, …) so only
+// credible, permanent addresses can register / sign in. Kept here as
+// defense-in-depth — Better Auth hooks are the primary enforcement point.
+const credibleEmailSchema = z
+  .string()
+  .email("Invalid email format")
+  .refine((email) => !isDisposableEmail(email), {
+    message: DISPOSABLE_EMAIL_MESSAGE,
+  });
 
 // ========================================
 // Common Schemas
@@ -26,7 +40,7 @@ export const idParamSchema = z.object({
 // ========================================
 
 export const registerSchema = z.object({
-  email: z.string().email("Invalid email format"),
+  email: credibleEmailSchema,
   password: z
     .string()
     .min(8, "Password must be at least 8 characters")
@@ -37,7 +51,7 @@ export const registerSchema = z.object({
 });
 
 export const loginSchema = z.object({
-  email: z.string().email("Invalid email format"),
+  email: credibleEmailSchema,
   password: z.string().min(1, "Password is required"),
 });
 
@@ -71,7 +85,7 @@ export const phoneLoginSchema = z.object({
 });
 
 export const forgotPasswordSchema = z.object({
-  email: z.string().email("Invalid email format"),
+  email: credibleEmailSchema,
 });
 
 export const resetPasswordSchema = z.object({
@@ -85,7 +99,7 @@ export const resetPasswordSchema = z.object({
 });
 
 export const verifyEmailSchema = z.object({
-  email: z.string().email("Invalid email format"),
+  email: credibleEmailSchema,
   token: z.string().min(1, "Token is required"),
 });
 
@@ -148,7 +162,7 @@ export const updateBikeSchema = createBikeSchema.partial();
 export type CreateBikeInput = z.infer<typeof createBikeSchema>;
 export type UpdateBikeInput = z.infer<typeof updateBikeSchema>;
 export const updateUserSchema = updateProfileSchema.extend({
-  email: z.string().email("Invalid email format").optional(),
+  email: credibleEmailSchema.optional(),
   username: z.string().min(2).max(50).optional(),
   phone: z.string().min(10).max(20).optional(),
 });
@@ -452,7 +466,7 @@ export const adminUsersQuerySchema = paginationSchema.extend({
 });
 
 export const createAdminUserSchema = z.object({
-  email: z.string().email("Invalid email format"),
+  email: credibleEmailSchema,
   password: z
     .string()
     .min(8, "Password must be at least 8 characters")
@@ -475,7 +489,7 @@ export const createAdminUserSchema = z.object({
 
 export const updateAdminUserSchema = z
   .object({
-    email: z.string().email("Invalid email format").optional(),
+    email: credibleEmailSchema.optional(),
     name: z.string().min(2).max(100).optional(),
     username: z.string().min(2).max(50).optional(),
     phone: z.string().min(10).max(20).nullable().optional(),

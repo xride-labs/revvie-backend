@@ -1,8 +1,13 @@
 import { betterAuth } from "better-auth";
 import { prismaAdapter } from "better-auth/adapters/prisma";
+import { createAuthMiddleware, APIError } from "better-auth/api";
 import { bearer, emailOTP, magicLink } from "better-auth/plugins";
 import { passkey } from "@better-auth/passkey";
 import prisma from "../lib/prisma.js";
+import {
+  DISPOSABLE_EMAIL_MESSAGE,
+  isDisposableEmail,
+} from "../lib/disposableEmail.js";
 import type { Request, Response, NextFunction } from "express";
 import { fromNodeHeaders } from "better-auth/node";
 import {
@@ -165,10 +170,48 @@ export const auth = betterAuth({
     sendOnSignUp: true,
   },
 
+  // Reject throwaway email domains on every email-bearing endpoint, before
+  // Better Auth runs any signup / sign-in / OTP / magic-link / reset logic.
+  // This covers login too (per product requirement: disposables can neither
+  // register nor sign in). OAuth signups that never hit these paths are
+  // caught separately by databaseHooks.user.create.before below.
+  hooks: {
+    before: createAuthMiddleware(async (ctx) => {
+      const path = ctx.path ?? "";
+      const isEmailFlow =
+        path.startsWith("/sign-up") ||
+        path.startsWith("/sign-in") ||
+        path.startsWith("/email-otp") ||
+        path.startsWith("/magic-link") ||
+        path.startsWith("/verify-email") ||
+        path.startsWith("/request-password") ||
+        path.startsWith("/forget-password") ||
+        path.startsWith("/reset-password") ||
+        path.startsWith("/change-email");
+      if (!isEmailFlow) return;
+      const email = (ctx.body as { email?: unknown } | null | undefined)?.email;
+      if (typeof email === "string" && isDisposableEmail(email)) {
+        throw new APIError("BAD_REQUEST", {
+          message: DISPOSABLE_EMAIL_MESSAGE,
+        });
+      }
+    }),
+  },
+
   // Database hooks for custom logic on user creation
   databaseHooks: {
     user: {
       create: {
+        // Safety net for signup paths that don't carry `email` in hook
+        // context (Google OAuth, admin-created users, future providers).
+        before: async (user) => {
+          if (user.email && isDisposableEmail(user.email)) {
+            throw new APIError("BAD_REQUEST", {
+              message: DISPOSABLE_EMAIL_MESSAGE,
+            });
+          }
+          return { data: user };
+        },
         after: async (user) => {
           // Auto-assign RIDER role on signup
           try {
