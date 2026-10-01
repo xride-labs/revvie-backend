@@ -62,6 +62,42 @@ const emergencyContactBodySchema = z.object({
 });
 const emergencyContactUpdateSchema = emergencyContactBodySchema.partial();
 
+const linkGoogleSchema = z.object({
+  idToken: z.string().min(1, "Google ID token is required"),
+});
+
+const setEmailSchema = z.object({
+  email: z.string().trim().email("Please provide a valid email address"),
+});
+
+interface GoogleTokenPayload {
+  sub: string;
+  email: string;
+  email_verified?: string | boolean;
+  name?: string;
+  picture?: string;
+}
+
+async function verifyGoogleIdToken(idToken: string): Promise<GoogleTokenPayload> {
+  const url = `https://oauth2.googleapis.com/tokeninfo?id_token=${encodeURIComponent(idToken)}`;
+  const resp = await fetch(url);
+  if (!resp.ok) {
+    const errorText = await resp.text();
+    throw new Error(`Google token validation failed: ${errorText}`);
+  }
+  const data = (await resp.json()) as any;
+  if (!data.sub || !data.email) {
+    throw new Error("Invalid Google token payload: missing sub or email");
+  }
+  return {
+    sub: data.sub,
+    email: data.email.toLowerCase(),
+    email_verified: data.email_verified,
+    name: data.name,
+    picture: data.picture,
+  };
+}
+
 /**
  * Mobile OAuth callback — converts the web session cookie into a redirect with a bearer token.
  * Better Auth social login redirects here after success; we read the session from the cookie
@@ -320,15 +356,45 @@ router.post(
           phone: result.normalizedPhone,
           id: { not: userId },
         },
+        include: {
+          _count: {
+            select: {
+              bikes: true,
+              createdRides: true,
+              rideParticipations: true,
+            },
+          },
+        },
       });
 
       if (existingUser) {
-        return ApiResponse.error(
-          res,
-          "This phone number is already verified with another Revvie account.",
-          409,
-          ErrorCode.CONFLICT,
-        );
+        devLog("[AUTH] Phone verified via OTP belongs to another account, transferring phone", {
+          previousUserId: existingUser.id,
+          targetUserId: userId,
+          phone: result.normalizedPhone,
+        });
+
+        const isPlaceholder =
+          !existingUser.email &&
+          (existingUser._count?.bikes ?? 0) === 0 &&
+          (existingUser._count?.createdRides ?? 0) === 0;
+
+        if (isPlaceholder) {
+          // Reassign any saved locations to current user
+          await prisma.savedLocation.updateMany({
+            where: { userId: existingUser.id },
+            data: { userId },
+          });
+          // Delete placeholder sessions and user
+          await prisma.session.deleteMany({ where: { userId: existingUser.id } });
+          await prisma.user.delete({ where: { id: existingUser.id } });
+        } else {
+          // Detach phone from previous account so current user can claim it
+          await prisma.user.update({
+            where: { id: existingUser.id },
+            data: { phone: null, phoneVerified: false },
+          });
+        }
       }
 
       const updatedUser = await prisma.user.update({
@@ -368,6 +434,296 @@ router.post(
         ErrorCode.INVALID_INPUT,
       );
     }
+  }),
+);
+
+/**
+ * @swagger
+ * /api/account/link-google:
+ *   post:
+ *     summary: Link Google account to current authenticated user
+ *     tags: [Auth]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [idToken]
+ *             properties:
+ *               idToken:
+ *                 type: string
+ *     responses:
+ *       200:
+ *         description: Google account linked successfully
+ *       400:
+ *         description: Invalid Google token
+ *       409:
+ *         description: Google account already linked to another active user
+ */
+router.post(
+  "/link-google",
+  requireAuth,
+  validateBody(linkGoogleSchema),
+  asyncHandler(async (req: Request, res: Response) => {
+    const { idToken } = req.body;
+    const session = (req as any).session;
+    const userId = session.user.id;
+
+    try {
+      const payload = await verifyGoogleIdToken(idToken);
+
+      // Verify current user exists
+      const currentUser = await prisma.user.findUnique({
+        where: { id: userId },
+      });
+
+      if (!currentUser) {
+        return ApiResponse.error(res, "User profile not found.", 404, ErrorCode.NOT_FOUND);
+      }
+
+      // Enforce: Cannot link a different email to this account!
+      if (currentUser.email && payload.email) {
+        if (currentUser.email.trim().toLowerCase() !== payload.email.trim().toLowerCase()) {
+          return ApiResponse.error(
+            res,
+            `Email mismatch: Your Revvie account is registered with ${currentUser.email}. You cannot link a different Google account (${payload.email}). Please choose the Google account matching your email.`,
+            400,
+            ErrorCode.INVALID_INPUT,
+          );
+        }
+      }
+
+      // Check if this Google account is already linked to any user
+      const existingAccount = await prisma.account.findUnique({
+        where: {
+          providerId_accountId: {
+            providerId: "google",
+            accountId: payload.sub,
+          },
+        },
+        include: {
+          user: {
+            include: {
+              _count: {
+                select: {
+                  bikes: true,
+                  createdRides: true,
+                  rideParticipations: true,
+                },
+              },
+            },
+          },
+        },
+      });
+
+      if (existingAccount) {
+        if (existingAccount.userId === userId) {
+          return ApiResponse.success(
+            res,
+            { email: payload.email, linked: true },
+            "Google account is already linked to your profile.",
+          );
+        }
+
+        // Check if the other user is just an empty duplicate/placeholder
+        const otherUser = existingAccount.user;
+        const isOtherEmpty =
+          otherUser &&
+          (otherUser._count?.bikes ?? 0) === 0 &&
+          (otherUser._count?.createdRides ?? 0) === 0 &&
+          (otherUser._count?.rideParticipations ?? 0) === 0;
+
+        if (isOtherEmpty) {
+          devLog("[AUTH] Migrating Google account from duplicate user to current user", {
+            fromUserId: otherUser.id,
+            toUserId: userId,
+            googleSub: payload.sub,
+          });
+
+          // Move any saved locations
+          await prisma.savedLocation.updateMany({
+            where: { userId: otherUser.id },
+            data: { userId },
+          });
+
+          // Reassign account
+          await prisma.account.update({
+            where: { id: existingAccount.id },
+            data: { userId },
+          });
+
+          // Delete duplicate user sessions
+          await prisma.session.deleteMany({
+            where: { userId: otherUser.id },
+          });
+
+          // Delete duplicate user
+          await prisma.user.delete({
+            where: { id: otherUser.id },
+          });
+        } else {
+          return ApiResponse.error(
+            res,
+            `This Google account is already linked to another active Revvie profile (${otherUser?.email || otherUser?.name || "another account"}).`,
+            409,
+            ErrorCode.CONFLICT,
+          );
+        }
+      } else {
+        // Link Google account to current user
+        await prisma.account.create({
+          data: {
+            userId,
+            providerId: "google",
+            accountId: payload.sub,
+            issuer: "local:oauth:google",
+            idToken,
+          },
+        });
+      }
+
+      // Update current user details if missing
+
+      const updateData: Record<string, any> = {};
+      if (!currentUser?.email) {
+        updateData.email = payload.email;
+        updateData.emailVerified = true;
+      }
+      if (!currentUser?.avatar && payload.picture) {
+        updateData.avatar = payload.picture;
+      }
+      if (!currentUser?.name && payload.name) {
+        updateData.name = payload.name;
+      }
+
+      let updatedUser = currentUser;
+      if (Object.keys(updateData).length > 0) {
+        updatedUser = await prisma.user.update({
+          where: { id: userId },
+          data: updateData,
+        });
+      }
+
+      devLog("[AUTH] Google account linked successfully", {
+        userId,
+        googleEmail: payload.email,
+        googleSub: payload.sub,
+      });
+
+      ApiResponse.success(
+        res,
+        {
+          user: updatedUser,
+          email: payload.email,
+          linked: true,
+        },
+        "Google account linked successfully!",
+      );
+    } catch (error: any) {
+      console.warn("[AUTH] POST /link-google - Failed:", error.message);
+      return ApiResponse.error(
+        res,
+        error.message || "Failed to link Google account",
+        400,
+        ErrorCode.INVALID_INPUT,
+      );
+    }
+  }),
+);
+
+/**
+ * @swagger
+ * /api/account/set-email:
+ *   post:
+ *     summary: Set or update email address for current user
+ *     tags: [Auth]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [email]
+ *             properties:
+ *               email:
+ *                 type: string
+ *     responses:
+ *       200:
+ *         description: Email updated successfully
+ *       400:
+ *         description: Invalid email address
+ *       409:
+ *         description: Email already in use
+ */
+router.post(
+  "/set-email",
+  requireAuth,
+  validateBody(setEmailSchema),
+  asyncHandler(async (req: Request, res: Response) => {
+    const { email } = req.body;
+    const session = (req as any).session;
+    const userId = session.user.id;
+    const normalizedEmail = email.trim().toLowerCase();
+
+    // Check if another account has this email
+    const existing = await prisma.user.findUnique({
+      where: { email: normalizedEmail },
+      include: {
+        _count: {
+          select: {
+            bikes: true,
+            createdRides: true,
+          },
+        },
+      },
+    });
+
+    if (existing && existing.id !== userId) {
+      const isEmpty =
+        !existing.phone &&
+        (existing._count?.bikes ?? 0) === 0 &&
+        (existing._count?.createdRides ?? 0) === 0;
+
+      if (isEmpty) {
+        await prisma.session.deleteMany({ where: { userId: existing.id } });
+        await prisma.account.deleteMany({ where: { userId: existing.id } });
+        await prisma.user.delete({ where: { id: existing.id } });
+      } else {
+        return ApiResponse.error(
+          res,
+          "This email is already associated with another Revvie account.",
+          409,
+          ErrorCode.CONFLICT,
+        );
+      }
+    }
+
+    const updatedUser = await prisma.user.update({
+      where: { id: userId },
+      data: {
+        email: normalizedEmail,
+        emailVerified: true,
+      },
+      select: {
+        id: true,
+        email: true,
+        name: true,
+        phone: true,
+        emailVerified: true,
+        phoneVerified: true,
+      },
+    });
+
+    ApiResponse.success(
+      res,
+      { user: updatedUser },
+      "Email address set successfully!",
+    );
   }),
 );
 

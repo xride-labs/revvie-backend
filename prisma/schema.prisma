@@ -2178,15 +2178,31 @@ enum SavedLocationType {
   OTHER
 }
 
+model Place {
+  id          String   @id @default(cuid())
+  name        String
+  address     String
+  latitude    Float
+  longitude   Float
+  placeId     String?  @unique @map("place_id") // Optional external ID (e.g., Google Place ID)
+  icon        String?
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  savedLocations SavedLocation[]
+
+  @@index([latitude, longitude], map: "places_lat_lng_idx")
+  @@map("places")
+}
+
 model SavedLocation {
   id        String            @id @default(cuid())
   userId    String            @map("user_id")
   listId    String?           @map("list_id")
+  placeId   String            @map("place_id")
   addedById String?           @map("added_by_id")
-  name      String
-  address   String
-  latitude  Float
-  longitude Float
+  
+  customName String?          @map("custom_name")
   type      SavedLocationType @default(FAVORITE)
   icon      String?
   createdAt DateTime          @default(now()) @map("created_at")
@@ -2194,10 +2210,13 @@ model SavedLocation {
 
   user    User            @relation(fields: [userId], references: [id], onDelete: Cascade)
   list    SavedPlaceList? @relation(fields: [listId], references: [id], onDelete: Cascade)
+  place   Place           @relation(fields: [placeId], references: [id], onDelete: Restrict)
   addedBy User?           @relation("SavedLocationAddedBy", fields: [addedById], references: [id], onDelete: SetNull)
 
+  @@unique([userId, placeId], map: "saved_locations_user_place_unique")
   @@index([userId], map: "saved_locations_user_idx")
   @@index([listId], map: "saved_locations_list_idx")
+  @@index([placeId], map: "saved_locations_place_idx")
   @@index([addedById], map: "saved_locations_added_by_idx")
   @@map("saved_locations")
 }

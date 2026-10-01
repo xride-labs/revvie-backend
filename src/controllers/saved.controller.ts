@@ -17,30 +17,73 @@ export class SavedController {
 
     const locations = await prisma.savedLocation.findMany({
       where,
+      include: { place: true },
       orderBy: { createdAt: "desc" },
     });
 
-    ApiResponse.success(res, { items: locations });
+    const mappedLocations = locations.map(l => ({
+      ...l,
+      name: l.customName || l.place?.name || "Unknown",
+      address: l.place?.address || "",
+      latitude: l.place?.latitude || 0,
+      longitude: l.place?.longitude || 0,
+      icon: l.icon || l.place?.icon || null,
+      place: undefined,
+      customName: undefined
+    }));
+
+    ApiResponse.success(res, { items: mappedLocations });
   }
 
   static async postLocations(req: Request, res: Response) {
     const userId = (req as any).session?.user?.id;
     const { name, address, latitude, longitude, type, icon, listId } = req.body;
 
+    let place = await prisma.place.findFirst({
+      where: {
+        latitude: parseFloat(latitude),
+        longitude: parseFloat(longitude),
+        name: name
+      }
+    });
+
+    if (!place) {
+      place = await prisma.place.create({
+        data: {
+          name,
+          address: address || "",
+          latitude: parseFloat(latitude),
+          longitude: parseFloat(longitude),
+          icon: icon || null
+        }
+      });
+    }
+
     const location = await prisma.savedLocation.create({
       data: {
         userId,
         listId: listId || null,
-        name,
-        address,
-        latitude,
-        longitude,
+        addedById: userId,
+        placeId: place.id,
+        customName: name,
         type: type || "FAVORITE",
         icon: icon || null,
       },
+      include: { place: true }
     });
 
-    ApiResponse.created(res, location, "Saved destination created");
+    const mapped = {
+      ...location,
+      name: location.customName || location.place?.name,
+      address: location.place?.address,
+      latitude: location.place?.latitude,
+      longitude: location.place?.longitude,
+      icon: location.icon || location.place?.icon,
+      place: undefined,
+      customName: undefined
+    };
+
+    ApiResponse.created(res, mapped, "Saved destination created");
   }
 
   static async patchLocationsById(req: Request, res: Response) {
@@ -49,18 +92,42 @@ export class SavedController {
 
     const existing = await prisma.savedLocation.findFirst({
       where: { id, userId },
+      include: { place: true },
     });
 
     if (!existing) {
       return ApiResponse.notFound(res, "Saved destination not found");
     }
+    
+    // For patch, map incoming name to customName
+    const updateData: any = { ...req.body };
+    if (updateData.name) {
+      updateData.customName = updateData.name;
+      delete updateData.name;
+    }
+    // Ignore latitude/longitude/address updates since they belong to Place
+    delete updateData.latitude;
+    delete updateData.longitude;
+    delete updateData.address;
 
     const updated = await prisma.savedLocation.update({
       where: { id },
-      data: req.body,
+      data: updateData,
+      include: { place: true }
     });
+    
+    const mapped = {
+      ...updated,
+      name: updated.customName || updated.place?.name,
+      address: updated.place?.address,
+      latitude: updated.place?.latitude,
+      longitude: updated.place?.longitude,
+      icon: updated.icon || updated.place?.icon,
+      place: undefined,
+      customName: undefined
+    };
 
-    ApiResponse.success(res, updated, "Saved destination updated");
+    ApiResponse.success(res, mapped, "Saved destination updated");
   }
 
   static async deleteLocationsById(req: Request, res: Response) {
@@ -150,11 +217,18 @@ export class SavedController {
             take: 5,
             select: {
               id: true,
-              name: true,
-              latitude: true,
-              longitude: true,
               type: true,
               icon: true,
+              customName: true,
+              place: {
+                select: {
+                  name: true,
+                  latitude: true,
+                  longitude: true,
+                  address: true,
+                  icon: true
+                }
+              }
             },
           },
           members: {
@@ -184,11 +258,18 @@ export class SavedController {
                 take: 5,
                 select: {
                   id: true,
-                  name: true,
-                  latitude: true,
-                  longitude: true,
                   type: true,
                   icon: true,
+                  customName: true,
+                  place: {
+                    select: {
+                      name: true,
+                      latitude: true,
+                      longitude: true,
+                      address: true,
+                      icon: true
+                    }
+                  }
                 },
               },
               members: {
@@ -208,11 +289,24 @@ export class SavedController {
         orderBy: { updatedAt: "desc" },
       }),
     ]);
+    const mapListLocations = (l: any) => ({
+      ...l,
+      locations: l.locations.map((loc: any) => ({
+        ...loc,
+        name: loc.customName || loc.place?.name || "Unknown",
+        latitude: loc.place?.latitude || 0,
+        longitude: loc.place?.longitude || 0,
+        address: loc.place?.address || "",
+        icon: loc.icon || loc.place?.icon || null,
+        place: undefined,
+        customName: undefined
+      }))
+    });
 
-    const myLists = ownedLists.map((l) => ({ ...l, role: "OWNER" as const }));
+    const myLists = ownedLists.map((l) => ({ ...mapListLocations(l), role: "OWNER" as const }));
     const joinedLists = memberRows
       .filter((mr) => mr.list && mr.list.userId !== userId)
-      .map((mr) => ({ ...mr.list, role: mr.role }));
+      .map((mr) => ({ ...mapListLocations(mr.list), role: mr.role }));
 
     const allItems = [...myLists, ...joinedLists];
 
@@ -266,6 +360,7 @@ export class SavedController {
         locations: {
           orderBy: { createdAt: "asc" },
           include: {
+            place: true,
             addedBy: {
               select: { id: true, name: true, username: true, avatar: true },
             },
@@ -293,8 +388,20 @@ export class SavedController {
     const member = list.members.find((m) => m.user.id === userId);
     const role = isOwner ? "OWNER" : member?.role || (list.isPublic ? "VIEWER" : "NONE");
 
+    const mappedLocations = list.locations.map((loc: any) => ({
+      ...loc,
+      name: loc.customName || loc.place?.name || "Unknown",
+      address: loc.place?.address || "",
+      latitude: loc.place?.latitude || 0,
+      longitude: loc.place?.longitude || 0,
+      icon: loc.icon || loc.place?.icon || null,
+      place: undefined,
+      customName: undefined
+    }));
+
     ApiResponse.success(res, {
       ...list,
+      locations: mappedLocations,
       userRole: role,
       isOwner,
     });
@@ -372,19 +479,39 @@ export class SavedController {
     }
 
     const { name, address, latitude, longitude, type, icon } = req.body;
+    
+    let place = await prisma.place.findFirst({
+      where: {
+        latitude: parseFloat(latitude),
+        longitude: parseFloat(longitude),
+        name: name
+      }
+    });
+
+    if (!place) {
+      place = await prisma.place.create({
+        data: {
+          name,
+          address: address || "",
+          latitude: parseFloat(latitude),
+          longitude: parseFloat(longitude),
+          icon: icon || null
+        }
+      });
+    }
+
     const location = await prisma.savedLocation.create({
       data: {
         userId,
         addedById: userId,
         listId,
-        name,
-        address: address || "",
-        latitude,
-        longitude,
+        placeId: place.id,
+        customName: name,
         type: type || "FAVORITE",
         icon: icon || null,
       },
       include: {
+        place: true,
         addedBy: {
           select: { id: true, name: true, username: true, avatar: true },
         },
@@ -397,7 +524,18 @@ export class SavedController {
       data: { updatedAt: new Date() },
     });
 
-    ApiResponse.created(res, location, "Place added to list");
+    const mapped = {
+      ...location,
+      name: location.customName || location.place?.name,
+      address: location.place?.address,
+      latitude: location.place?.latitude,
+      longitude: location.place?.longitude,
+      icon: location.icon || location.place?.icon,
+      place: undefined,
+      customName: undefined
+    };
+
+    ApiResponse.created(res, mapped, "Place added to list");
   }
 
   static async deletePlaceFromList(req: Request, res: Response) {

@@ -250,6 +250,8 @@ router.get(
   }),
 );
 
+// ─── Brand PRO subscriptions ────────────────────────────────────────────────
+
 // Brand portal subscription checkout
 router.post(
   "/brand-checkout",
