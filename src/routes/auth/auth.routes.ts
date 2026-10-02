@@ -523,7 +523,7 @@ router.post(
         if (existingAccount.userId === userId) {
           return ApiResponse.success(
             res,
-            { email: payload.email, linked: true },
+            { user: currentUser, email: payload.email, linked: true },
             "Google account is already linked to your profile.",
           );
         }
