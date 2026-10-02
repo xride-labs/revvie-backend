@@ -333,7 +333,23 @@ async function main() {
     return;
   }
 
-  // Clear existing data
+  // HARD SAFETY CHECK: Never allow destructive deletes on cloud/remote databases (Supabase, Neon, etc.)
+  const dbUrl = process.env.DIRECT_URL || process.env.DATABASE_URL || "";
+  const isCloudDb =
+    dbUrl.includes("supabase.co") ||
+    dbUrl.includes("supabase.com") ||
+    dbUrl.includes("neon.tech") ||
+    dbUrl.includes("pooler.supabase.com") ||
+    dbUrl.includes("aws-");
+
+  if (isCloudDb) {
+    console.error(
+      "❌ FATAL SAFETY ERROR: Destructive database wiping is blocked! The database URL points to a remote/cloud database (Supabase/Neon). Destructive deleteMany() is strictly prohibited on cloud databases.",
+    );
+    process.exit(1);
+  }
+
+  // Clear existing data (local throwaway container ONLY)
   console.log("🗑️  Clearing existing data...");
   await prisma.review.deleteMany();
   await prisma.eventParticipant.deleteMany();

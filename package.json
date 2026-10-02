@@ -9,7 +9,7 @@
     "build": "bun run prisma:generate && tsc",
     "start": "bun run node dist/src/server.js",
     "start:with-db": "bun run prisma:deploy && bun run start",
-    "deploy:render": "bun run prisma:deploy && bun run db:seed:prod",
+    "deploy:render": "bun run prisma:deploy",
     "build:render": "bun run prisma:deploy && bun run build",
     "prisma:generate": "bunx prisma generate",
     "prisma:migrate": "bunx prisma migrate dev",
