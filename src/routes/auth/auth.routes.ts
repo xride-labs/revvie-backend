@@ -757,6 +757,22 @@ router.post(
  *         $ref: '#/components/responses/Unauthorized'
  */
 router.get(
+  "/session",
+  requireAuth,
+  asyncHandler(async (req: Request, res: Response) => {
+    const session = (req as any).session;
+    ApiResponse.success(
+      res,
+      {
+        user: session.user,
+        session: session.session,
+      },
+      "Current session",
+    );
+  }),
+);
+
+router.get(
   "/me",
   requireAuth,
   asyncHandler(async (req: Request, res: Response) => {
