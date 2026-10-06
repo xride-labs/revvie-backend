@@ -51,6 +51,7 @@ import {
   maintenanceModeMiddleware,
   signupGateMiddleware,
 } from "./middlewares/appSettings.js";
+import { tenantMiddleware } from "./middlewares/tenant.js";
 import { globalErrorHandler } from "./middlewares/errorHandler.js";
 import { welcomeHtml } from "./data/welcome.js";
 
@@ -83,6 +84,9 @@ app.set("trust proxy", isProduction ? 1 : false);
 
 // Apply CORS configuration
 app.use(cors(CORS_OPTIONS));
+
+// Tenant context resolution middleware
+app.use(tenantMiddleware);
 
 // Prometheus metrics middleware — measures requests and latencies across all routes
 app.use(metricsMiddleware);

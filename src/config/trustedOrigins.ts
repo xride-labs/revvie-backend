@@ -68,13 +68,48 @@ export const TRUSTED_ORIGINS = [
 ].filter(Boolean);
 
 /**
- * CORS configuration using trusted origins
+ * Checks if an origin matches explicitly trusted origins or wildcard subdomain patterns.
+ */
+export function isOriginAllowed(origin?: string): boolean {
+  if (!origin) return true;
+  if (TRUSTED_ORIGINS.includes(origin)) return true;
+
+  try {
+    const url = new URL(origin);
+    const host = url.hostname.toLowerCase();
+
+    if (host === "revvie.app" || host.endsWith(".revvie.app")) return true;
+    if (host === "xride-labs.in" || host.endsWith(".xride-labs.in")) return true;
+    if (host === "localhost" || host.endsWith(".localhost")) return true;
+  } catch {
+    return false;
+  }
+
+  return false;
+}
+
+/**
+ * CORS configuration using dynamic trusted origin verification
  */
 export const CORS_OPTIONS = {
-  origin: TRUSTED_ORIGINS,
+  origin: (origin: string | undefined, callback: (err: Error | null, allow?: boolean) => void) => {
+    if (isOriginAllowed(origin)) {
+      callback(null, true);
+    } else {
+      callback(new Error(`Origin ${origin} not allowed by CORS`));
+    }
+  },
   credentials: true,
   methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-  allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With"],
+  allowedHeaders: [
+    "Content-Type",
+    "Authorization",
+    "X-Requested-With",
+    "x-tenant-slug",
+    "x-tenant-host",
+    "x-tenant-type",
+    "x-tenant-id",
+  ],
 };
 
 /**
