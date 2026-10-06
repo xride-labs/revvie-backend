@@ -37,6 +37,7 @@ import {
   savedRoutes,
   weatherRoutes,
   analyticsRoutes,
+  tenantRoutes,
 } from "./routes/index.js";
 import { metricsMiddleware, metricsHandler } from "./lib/metrics.js";
 import {
@@ -296,6 +297,7 @@ app.use("/api/expenses", expenseRoutes);
 app.use("/api/saved", savedRoutes);
 app.use("/api/weather", weatherRoutes);
 app.use("/api/analytics", analyticsRoutes);
+app.use("/api/tenant", tenantRoutes);
 
 // Base URL welcome page
 app.get("/", (req: Request, res: Response) => {

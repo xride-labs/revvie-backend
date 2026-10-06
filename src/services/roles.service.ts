@@ -7,6 +7,7 @@ interface CacheEntry<T> {
 }
 const permissionCache = new Map<string, CacheEntry<string[]>>();
 const clubPermissionCache = new Map<string, CacheEntry<{ permissions: string[]; role: any | null }>>();
+const businessPermissionCache = new Map<string, CacheEntry<{ permissions: string[]; role: any | null }>>();
 
 const CACHE_TTL_MS = 10_000;
 
@@ -21,6 +22,11 @@ export class RolesService {
         clubPermissionCache.delete(key);
       }
     }
+    for (const key of businessPermissionCache.keys()) {
+      if (key.startsWith(`${userId}:`)) {
+        businessPermissionCache.delete(key);
+      }
+    }
   }
 
   /**
@@ -30,6 +36,43 @@ export class RolesService {
     for (const key of clubPermissionCache.keys()) {
       if (key.endsWith(`:${clubId}`)) {
         clubPermissionCache.delete(key);
+      }
+    }
+  }
+
+  /**
+   * Invalidate cached permissions for all members of a business
+   */
+  static clearBusinessCache(businessId: string) {
+    for (const key of businessPermissionCache.keys()) {
+      if (key.endsWith(`:${businessId}`)) {
+        businessPermissionCache.delete(key);
+      }
+    }
+  }
+
+  /**
+   * Validates that all requested permission codes are permitted for the specified OrganizationType.
+   * Throws an Error if any permission is outside the organization type's scope.
+   */
+  static validateRolePermissionsForOrgType(
+    orgType: "PLATFORM" | "BRAND" | "CLUB" | "BUSINESS",
+    permissionCodes: string[],
+  ): void {
+    for (const code of permissionCodes) {
+      if (orgType === "CLUB") {
+        if (!code.startsWith("club:")) {
+          throw new Error(`Permission '${code}' is not permitted for organization type CLUB.`);
+        }
+      } else if (orgType === "BRAND" || orgType === "BUSINESS") {
+        if (!code.startsWith("business:") && !code.startsWith("brand:")) {
+          throw new Error(`Permission '${code}' is not permitted for organization type ${orgType}.`);
+        }
+      } else if (orgType === "PLATFORM") {
+        // Platform roles can manage system-level features
+        if (!code.startsWith("system:") && !code.startsWith("admin:")) {
+          // Allowed for platform
+        }
       }
     }
   }
@@ -205,6 +248,120 @@ export class RolesService {
     permissionCode: string
   ): Promise<boolean> {
     const { permissions } = await this.getClubPermissions(userId, clubId);
+    return permissions.includes(permissionCode);
+  }
+
+  /**
+   * Fetch all effective permissions for a user within a specific business context
+   */
+  static async getBusinessPermissions(
+    userId: string,
+    businessId: string
+  ): Promise<{ permissions: string[]; role: { id?: string; name: string; slug: string; color?: string | null; icon?: string | null } | null }> {
+    const cacheKey = `${userId}:${businessId}`;
+    const cached = businessPermissionCache.get(cacheKey);
+    if (cached && cached.expiresAt > Date.now()) {
+      return cached.data;
+    }
+
+    // 1. Check if user is a global platform admin
+    const globalPerms = await this.getUserPermissions(userId);
+    if (globalPerms.includes("system:admin") || globalPerms.includes("system:manage_brands")) {
+      const allBusinessPerms = await prisma.permission.findMany({
+        where: { scope: { in: ["BUSINESS", "SYSTEM"] } },
+        select: { code: true },
+      });
+      const res = {
+        permissions: allBusinessPerms.map((p) => p.code),
+        role: { name: "Platform Admin", slug: "platform_admin", color: "#EF4444", icon: "shield-alert" },
+      };
+      businessPermissionCache.set(cacheKey, { data: res, expiresAt: Date.now() + CACHE_TTL_MS });
+      return res;
+    }
+
+    // 2. Fetch business to check ownership
+    const business = await prisma.businessProfile.findUnique({
+      where: { id: businessId },
+      select: { ownerId: true },
+    });
+
+    if (!business) {
+      return { permissions: [], role: null };
+    }
+
+    // 3. If owner of the business -> Full Business Owner permissions
+    if (business.ownerId === userId) {
+      const ownerRole = await prisma.role.findFirst({
+        where: { slug: "owner", scope: "BUSINESS" },
+        include: { permissions: { include: { permission: true } } },
+      });
+      const perms = ownerRole
+        ? ownerRole.permissions.map((rp) => rp.permission.code)
+        : [
+            "business:manage",
+            "business:manage_settings",
+            "business:manage_members",
+            "business:manage_roles",
+            "business:manage_listings",
+            "business:manage_deals",
+            "business:view_analytics",
+          ];
+      const res = {
+        permissions: perms,
+        role: {
+          id: ownerRole?.id,
+          name: ownerRole?.name || "Business Owner",
+          slug: "owner",
+          color: ownerRole?.color || "#F59E0B",
+          icon: ownerRole?.icon || "crown",
+        },
+      };
+      businessPermissionCache.set(cacheKey, { data: res, expiresAt: Date.now() + CACHE_TTL_MS });
+      return res;
+    }
+
+    // 4. Fetch business membership
+    const membership = await prisma.brandMember.findUnique({
+      where: { businessId_userId: { businessId, userId } },
+      include: {
+        role: {
+          include: {
+            permissions: {
+              include: { permission: true },
+            },
+          },
+        },
+      },
+    });
+
+    if (!membership || !membership.role) {
+      return { permissions: [], role: null };
+    }
+
+    const perms = membership.role.permissions.map((rp) => rp.permission.code);
+    const res = {
+      permissions: perms,
+      role: {
+        id: membership.role.id,
+        name: membership.role.name,
+        slug: membership.role.slug,
+        color: membership.role.color,
+        icon: membership.role.icon,
+      },
+    };
+    businessPermissionCache.set(cacheKey, { data: res, expiresAt: Date.now() + CACHE_TTL_MS });
+    return res;
+  }
+
+  /**
+   * Check if a user has a specific permission in a business
+   */
+  static async hasBusinessPermission(
+    userId: string,
+    businessId: string,
+    permissionCode: string
+  ): Promise<boolean> {
+    const { permissions } = await this.getBusinessPermissions(userId, businessId);
     return permissions.includes(permissionCode);
   }
 
@@ -490,6 +647,248 @@ export class RolesService {
     });
 
     this.clearClubCache(clubId);
+    return updatedMember;
+  }
+
+  /**
+   * List all roles available for a business (System Business Roles + Custom Business Roles)
+   */
+  static async listBusinessRoles(businessId: string) {
+    const [systemBusinessRoles, customBusinessRoles] = await Promise.all([
+      prisma.role.findMany({
+        where: { scope: "BUSINESS", scopeId: null },
+        include: {
+          permissions: {
+            include: { permission: true },
+          },
+          _count: { select: { businessMembers: { where: { businessId } } } },
+        },
+        orderBy: { priority: "desc" },
+      }),
+      prisma.role.findMany({
+        where: { scope: "BUSINESS", scopeId: businessId },
+        include: {
+          permissions: {
+            include: { permission: true },
+          },
+          _count: { select: { businessMembers: true } },
+        },
+        orderBy: { createdAt: "desc" },
+      }),
+    ]);
+
+    return [...systemBusinessRoles, ...customBusinessRoles].map((r) => ({
+      id: r.id,
+      name: r.name,
+      slug: r.slug,
+      description: r.description,
+      color: r.color,
+      icon: r.icon,
+      priority: r.priority,
+      isSystem: r.isSystem,
+      scope: r.scope,
+      scopeId: r.scopeId,
+      permissions: r.permissions.map((p) => ({
+        code: p.permission.code,
+        name: p.permission.name,
+        category: p.permission.category,
+      })),
+      memberCount: (r as any)._count?.businessMembers || 0,
+    }));
+  }
+
+  /**
+   * List all available permissions that can be granted to business roles
+   */
+  static async listBusinessPermissions() {
+    return await prisma.permission.findMany({
+      where: { scope: "BUSINESS" },
+      orderBy: [{ category: "asc" }, { name: "asc" }],
+    });
+  }
+
+  /**
+   * Create a custom role for a business
+   */
+  static async createBusinessRole(
+    businessId: string,
+    data: {
+      name: string;
+      description?: string;
+      color?: string;
+      icon?: string;
+      permissionCodes: string[];
+    }
+  ) {
+    const slug = `${data.name.toLowerCase().replace(/[^a-z0-9]+/g, "_")}_${Date.now().toString(36)}`;
+
+    // Validate permission codes
+    const permissions = await prisma.permission.findMany({
+      where: {
+        code: { in: data.permissionCodes },
+        scope: "BUSINESS",
+      },
+    });
+
+    const role = await prisma.role.create({
+      data: {
+        name: data.name,
+        slug,
+        description: data.description,
+        color: data.color || "#3B82F6",
+        icon: data.icon || "shield",
+        scope: "BUSINESS",
+        scopeId: businessId,
+        isSystem: false,
+        priority: 50,
+        permissions: {
+          create: permissions.map((p) => ({
+            permissionId: p.id,
+          })),
+        },
+      },
+      include: {
+        permissions: {
+          include: { permission: true },
+        },
+      },
+    });
+
+    this.clearBusinessCache(businessId);
+    return role;
+  }
+
+  /**
+   * Update a custom role for a business
+   */
+  static async updateBusinessRole(
+    businessId: string,
+    roleId: string,
+    data: {
+      name?: string;
+      description?: string;
+      color?: string;
+      icon?: string;
+      permissionCodes?: string[];
+    }
+  ) {
+    const role = await prisma.role.findFirst({
+      where: { id: roleId, scope: "BUSINESS", scopeId: businessId },
+    });
+
+    if (!role) {
+      throw new Error("Custom role not found");
+    }
+
+    if (role.isSystem) {
+      throw new Error("System roles cannot be modified");
+    }
+
+    // Update permissions if provided
+    if (data.permissionCodes) {
+      await prisma.rolePermission.deleteMany({ where: { roleId } });
+      const perms = await prisma.permission.findMany({
+        where: { code: { in: data.permissionCodes }, scope: "BUSINESS" },
+      });
+      await prisma.rolePermission.createMany({
+        data: perms.map((p) => ({ roleId, permissionId: p.id })),
+      });
+    }
+
+    const updated = await prisma.role.update({
+      where: { id: roleId },
+      data: {
+        name: data.name ?? role.name,
+        description: data.description !== undefined ? data.description : role.description,
+        color: data.color ?? role.color,
+        icon: data.icon ?? role.icon,
+      },
+      include: {
+        permissions: {
+          include: { permission: true },
+        },
+      },
+    });
+
+    this.clearBusinessCache(businessId);
+    return updated;
+  }
+
+  /**
+   * Delete a custom role for a business
+   */
+  static async deleteBusinessRole(businessId: string, roleId: string) {
+    const role = await prisma.role.findFirst({
+      where: { id: roleId, scope: "BUSINESS", scopeId: businessId },
+    });
+
+    if (!role) {
+      throw new Error("Role not found");
+    }
+
+    if (role.isSystem) {
+      throw new Error("System-defined roles cannot be deleted");
+    }
+
+    // Reassign any members using this role to standard member
+    const memberRole = await prisma.role.findFirst({
+      where: { scope: "BUSINESS", slug: "member" },
+      select: { id: true },
+    });
+    if (memberRole) {
+      await prisma.brandMember.updateMany({
+        where: { businessId, roleId },
+        data: { roleId: memberRole.id },
+      });
+    }
+
+    await prisma.role.delete({ where: { id: roleId } });
+    this.clearBusinessCache(businessId);
+  }
+
+  /**
+   * Assign a role to a business member
+   */
+  static async assignBusinessMemberRole(businessId: string, userId: string, roleId: string | null) {
+    let targetRoleId = roleId;
+
+    if (!targetRoleId) {
+      const defaultRole = await prisma.role.findFirst({
+        where: { scope: "BUSINESS", slug: "member" },
+        select: { id: true },
+      });
+      targetRoleId = defaultRole?.id || null;
+    } else {
+      const role = await prisma.role.findFirst({
+        where: {
+          id: targetRoleId,
+          scope: "BUSINESS",
+          OR: [{ scopeId: null }, { scopeId: businessId }],
+        },
+      });
+
+      if (!role) {
+        throw new Error("Role not found for this business");
+      }
+      targetRoleId = role.id;
+    }
+
+    if (!targetRoleId) {
+      throw new Error("Member role could not be resolved");
+    }
+
+    const updatedMember = await prisma.brandMember.update({
+      where: { businessId_userId: { businessId, userId } },
+      data: {
+        roleId: targetRoleId,
+      },
+      include: {
+        role: true,
+        user: { select: { id: true, name: true, avatar: true } },
+      },
+    });
+
+    this.clearBusinessCache(businessId);
     return updatedMember;
   }
 }
