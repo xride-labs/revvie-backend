@@ -194,6 +194,9 @@ model User {
   savedPlaceLists       SavedPlaceList[]
   savedPlaceListMembers SavedPlaceListMember[]
 
+  // Multi-tenant organization memberships
+  organizationMemberships OrganizationMembership[]
+
   // Supports the leaderboard's ORDER BY xpPoints DESC, level DESC, createdAt ASC
   // (user.controller.ts getLeaderboard) — previously an unindexed full sort.
   @@index([xpPoints(sort: Desc), level(sort: Desc), createdAt], map: "users_xp_leaderboard_idx")
@@ -320,8 +323,79 @@ enum PermissionScope {
 
 enum RoleScope {
   GLOBAL
+  ORGANIZATION
   CLUB
   BUSINESS
+}
+
+enum OrganizationType {
+  PLATFORM
+  BRAND
+  CLUB
+  BUSINESS
+}
+
+enum OrganizationStatus {
+  ACTIVE
+  SUSPENDED
+  PENDING_REVIEW
+  ARCHIVED
+}
+
+model Organization {
+  id          String             @id @default(cuid())
+  name        String
+  slug        String             @unique
+  type        OrganizationType
+  status      OrganizationStatus @default(ACTIVE)
+  metadata    Json?              @map("metadata")
+  createdAt   DateTime           @default(now()) @map("created_at")
+  updatedAt   DateTime           @updatedAt @map("updated_at")
+
+  domains     OrganizationDomain[]
+  memberships OrganizationMembership[]
+  roles       Role[]
+
+  // 1-to-1 relations to existing entity profiles
+  club            Club?
+  businessProfile BusinessProfile?
+
+  @@index([type, status], map: "organizations_type_status_idx")
+  @@map("organizations")
+}
+
+model OrganizationDomain {
+  id             String       @id @default(cuid())
+  organizationId String       @map("organization_id")
+  hostname       String       @unique // canonical lowercase hostname (e.g. "ktm-bangalore.revvie.app")
+  isPrimary      Boolean      @default(true) @map("is_primary")
+  isCustom       Boolean      @default(false) @map("is_custom")
+  createdAt      DateTime     @default(now()) @map("created_at")
+  updatedAt      DateTime     @updatedAt @map("updated_at")
+
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId], map: "org_domains_org_idx")
+  @@map("organization_domains")
+}
+
+model OrganizationMembership {
+  id             String       @id @default(cuid())
+  organizationId String       @map("organization_id")
+  userId         String       @map("user_id")
+  roleId         String       @map("role_id")
+  status         String       @default("ACTIVE")
+  joinedAt       DateTime     @default(now()) @map("joined_at")
+  updatedAt      DateTime     @updatedAt @map("updated_at")
+
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user           User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role           Role         @relation(fields: [roleId], references: [id], onDelete: Cascade)
+
+  @@unique([organizationId, userId], map: "org_memberships_org_user_unique")
+  @@index([organizationId, status], map: "org_memberships_org_status_idx")
+  @@index([userId], map: "org_memberships_user_idx")
+  @@map("organization_memberships")
 }
 
 model Permission {
@@ -350,19 +424,26 @@ model Role {
   scope       RoleScope @default(GLOBAL)
   scopeId     String?   @map("scope_id") // clubId for CLUB, businessId for BUSINESS, null for GLOBAL
   isSystem    Boolean   @default(false) @map("is_system")
-  color       String?   @default("#f97316")
+  color       String?   @default("#ff1d2d")
   icon        String?   @default("shield")
   priority    Int       @default(0)
   createdAt   DateTime  @default(now()) @map("created_at")
   updatedAt   DateTime  @updatedAt @map("updated_at")
 
+  organizationId          String?           @map("organization_id")
+  organizationType        OrganizationType? @map("organization_type")
+  organization            Organization?     @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  organizationMemberships OrganizationMembership[]
+
   permissions RolePermission[]
   assignments UserRoleAssignment[]
   clubMembers ClubMember[]
+  businessMembers BrandMember[]
 
   @@unique([slug, scope, scopeId], map: "roles_slug_scope_scope_id_unique")
   @@index([scope, scopeId], map: "roles_scope_scope_id_idx")
   @@index([isSystem], map: "roles_is_system_idx")
+  @@index([organizationId], map: "roles_organization_idx")
   @@map("roles")
 }
 
@@ -517,35 +598,35 @@ model BusinessProfile {
   // Phase 9: first-party product catalog
   products  BrandProduct[]
 
+  // Multi-tenant organization
+  organizationId String?       @unique @map("organization_id")
+  organization   Organization? @relation(fields: [organizationId], references: [id], onDelete: SetNull)
+
   @@index([verification], map: "business_category_status_idx")
   @@index([latitude, longitude], map: "business_geo_idx")
   @@index([ownerId], map: "business_owner_idx")
+  @@index([organizationId], map: "business_organization_idx")
   @@map("business_profiles")
 }
 
 // ─── Phase 8: Brand Teams ────────────────────────────────────────────────────
 
-enum BrandMemberRole {
-  OWNER
-  ADMIN
-  MODERATOR
-  MEMBER
-}
-
 model BrandMember {
-  id         String          @id @default(cuid())
-  businessId String          @map("business_id")
-  userId     String          @map("user_id")
-  role       BrandMemberRole @default(MEMBER)
-  invitedBy  String?         @map("invited_by")
-  joinedAt   DateTime        @default(now()) @map("joined_at")
+  id         String   @id @default(cuid())
+  businessId String   @map("business_id")
+  userId     String   @map("user_id")
+  roleId     String   @map("role_id")
+  invitedBy  String?  @map("invited_by")
+  joinedAt   DateTime @default(now()) @map("joined_at")
 
   business BusinessProfile @relation(fields: [businessId], references: [id], onDelete: Cascade)
   user     User            @relation("BrandMemberships", fields: [userId], references: [id], onDelete: Cascade)
   inviter  User?           @relation("BrandInviter", fields: [invitedBy], references: [id])
+  role     Role            @relation(fields: [roleId], references: [id], onDelete: Cascade)
 
   @@unique([businessId, userId])
   @@index([businessId], map: "brand_member_business_idx")
+  @@index([roleId], map: "brand_members_role_idx")
   @@map("brand_members")
 }
 
@@ -1026,10 +1107,16 @@ model Club {
   updatedAt DateTime @updatedAt @map("updated_at")
   events    Event[]  @relation("ClubEvents")
 
+  // Multi-tenant subdomain & organization
+  slug           String?       @unique
+  organizationId String?       @unique @map("organization_id")
+  organization   Organization? @relation(fields: [organizationId], references: [id], onDelete: SetNull)
+
   // Indexes for geo-queries and feed performance
   @@index([latitude, longitude], map: "clubs_geo_idx")
   @@index([memberCount], map: "clubs_member_count_idx")
   @@index([createdAt], map: "clubs_created_idx")
+  @@index([organizationId], map: "clubs_organization_idx")
   @@map("clubs")
 }
 
