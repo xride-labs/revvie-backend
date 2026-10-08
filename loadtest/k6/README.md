@@ -1,9 +1,18 @@
 # k6 load tests — Revvie backend
 
 Load tests for the Express/Better Auth API. Drives a realistic flow: each
-virtual user (VU) signs up once via Better Auth, then loops over read-heavy
-authenticated endpoints (`/account/me`, `/rides`, `/users`, `/feed`, `/clubs`)
-plus an optional ride-create write.
+virtual user (VU) signs in with a dedicated, pre-verified demo account, then
+loops over read-heavy authenticated endpoints (`/account/me`, `/rides`,
+`/users`, `/feed`, `/clubs`) plus an optional ride-create write.
+
+Production requires email verification, so load tests must not create accounts
+on demand. Provide the demo account through environment variables; do not put
+its credentials in this file or a command history:
+
+```powershell
+$env:LOADTEST_EMAIL = 'verified-demo-account@example.com'
+$env:LOADTEST_PASSWORD = '...'
+```
 
 ## 1. Install k6
 
@@ -43,6 +52,7 @@ k6 run -e SCENARIO=smoke  loadtest.js          # 10 VUs, 1m — sanity
 k6 run -e SCENARIO=load   loadtest.js          # ramp to 500, hold 5m — peak SLO
 k6 run -e SCENARIO=stress loadtest.js          # climb to 1500 — find breaking point
 k6 run -e SCENARIO=spike  loadtest.js          # instant 1000 — burst recovery
+k6 run -e SCENARIO=live1000 -e BASE_URL=https://api.revvie.xride-labs.in loadtest.js
 
 # options:
 k6 run -e SCENARIO=load -e BASE_URL=http://localhost:5000 loadtest.js
@@ -64,6 +74,7 @@ $env:K6_WEB_DASHBOARD = "true"; k6 run -e SCENARIO=load loadtest.js
 | `load` | ramp→500, hold 5m | p95 < 500ms, p99 < 1000ms, errors < 1% |
 | `stress` | 200→500→1000→1500 | p95 < 2.5s, errors < 25% (loose — finding the limit) |
 | `spike` | instant 1000 | p95 < 1.5s, errors < 10% |
+| `live1000` | ramp to and hold 1,000 VUs | p95 < 1.5s, p99 < 3s, errors < 10% |
 
 A non-zero exit code means a threshold failed.
 

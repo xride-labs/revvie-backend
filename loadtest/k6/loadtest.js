@@ -1,16 +1,18 @@
 /**
  * Revvie backend — k6 load test.
  *
- * Auth: Better Auth (email/password). The bearer() plugin returns the session
- * token in the `set-auth-token` response header on sign-up/sign-in, which we
- * then send as `Authorization: Bearer <token>`. (k6 also keeps a per-VU cookie
- * jar, so the session cookie works as a fallback automatically.)
+ * Auth: Better Auth (email/password). Supply a pre-verified dedicated demo
+ * account through LOADTEST_EMAIL / LOADTEST_PASSWORD. Production requires
+ * email verification, so self-sign-up cannot establish a usable live session.
+ * The bearer() plugin returns the session token in the `set-auth-token` header
+ * when available; k6's per-VU cookie jar is the fallback.
  *
- * Scenarios (pick with -e SCENARIO=smoke|load|stress|spike):
+ * Scenarios (pick with -e SCENARIO=smoke|load|stress|spike|live1000):
  *   smoke  — 10 VUs, 1m            sanity check that the system works under light load
  *   load   — ramp to 500, hold 5m  expected peak traffic; SLOs enforced as thresholds
  *   stress — climb past 1500       find the breaking point (where errors/latency spike)
  *   spike  — slam 1000 instantly   test sudden burst recovery
+ *   live1000 — hold 1000 VUs for 1m (production verification)
  *
  * Run:
  *   k6 run -e SCENARIO=smoke  loadtest.js
@@ -25,7 +27,14 @@ import { Trend, Counter, Rate } from "k6/metrics";
 const BASE_URL = __ENV.BASE_URL || "http://localhost:5000";
 const SCENARIO = __ENV.SCENARIO || "smoke";
 const INCLUDE_WRITES = __ENV.INCLUDE_WRITES === "1";
-const PASSWORD = "LoadTest123!";
+const LOADTEST_EMAIL = __ENV.LOADTEST_EMAIL;
+const LOADTEST_PASSWORD = __ENV.LOADTEST_PASSWORD;
+
+if (!LOADTEST_EMAIL || !LOADTEST_PASSWORD) {
+  throw new Error(
+    "LOADTEST_EMAIL and LOADTEST_PASSWORD must reference a verified demo account",
+  );
+}
 
 // ── Custom metrics ───────────────────────────────────────────────────────────
 const signupTrend = new Trend("auth_signup_duration", true);
@@ -81,6 +90,20 @@ const PROFILES = {
       http_req_duration: ["p(95)<1500"],
     },
   },
+  live1000: {
+    stages: [
+      { duration: "15s", target: 250 },
+      { duration: "15s", target: 500 },
+      { duration: "30s", target: 1000 },
+      { duration: "1m", target: 1000 },
+      { duration: "30s", target: 0 },
+    ],
+    thresholds: {
+      http_req_failed: ["rate<0.10"],
+      http_req_duration: ["p(95)<1500", "p(99)<3000"],
+      authenticated_requests: ["count>10000"],
+    },
+  },
 };
 
 const profile = PROFILES[SCENARIO] || PROFILES.smoke;
@@ -93,13 +116,16 @@ export const options = {
 
 // ── Per-VU session (module scope is per-VU in k6) ────────────────────────────
 let token = null;
+let authenticated = false;
 
 function jsonHeaders(extra) {
   return Object.assign({ "Content-Type": "application/json" }, extra || {});
 }
 
 function authHeaders() {
-  return token ? { Authorization: `Bearer ${token}` } : {};
+  return token && token !== "__cookie_session__"
+    ? { Authorization: `Bearer ${token}` }
+    : {};
 }
 
 function getAuthToken(res) {
@@ -110,30 +136,37 @@ function getAuthToken(res) {
   );
 }
 
-function signUp() {
-  const email = `loadtest_${__VU}_${__ITER}_${Date.now()}@example.com`;
+function signIn() {
   const res = http.post(
-    `${BASE_URL}/api/auth/sign-up/email`,
-    JSON.stringify({ email, password: PASSWORD, name: `LoadTest VU${__VU}` }),
-    { headers: jsonHeaders(), tags: { name: "auth:sign-up" } },
+    `${BASE_URL}/api/auth/sign-in/email`,
+    JSON.stringify({ email: LOADTEST_EMAIL, password: LOADTEST_PASSWORD }),
+    { headers: jsonHeaders(), tags: { name: "auth:sign-in" } },
   );
   signupTrend.add(res.timings.duration);
   if (res.status === 429) rateLimited.add(1);
   else rateLimited.add(0);
-  check(res, { "sign-up 200/201": (r) => r.status === 200 || r.status === 201 });
-  return getAuthToken(res);
+  const signedIn = check(res, { "sign-in 200": (r) => r.status === 200 });
+
+  // Better Auth sets an HttpOnly session cookie. k6 maintains a separate cookie
+  // jar for every VU, so the authenticated requests below work even when a
+  // bearer token header is not returned.
+  if (signedIn) {
+    return getAuthToken(res) || "__cookie_session__";
+  }
+  return null;
 }
 
 // ── VU lifecycle ─────────────────────────────────────────────────────────────
 export default function () {
   // Establish a session once per VU, reuse the token across iterations.
-  if (!token) {
-    token = signUp();
+  if (!authenticated) {
+    token = signIn();
     if (!token) {
-      // sign-up failed (rate limit / error) — back off and retry next iter.
+      // Sign-in failed (rate limit / error) — back off and retry next iter.
       sleep(1);
       return;
     }
+    authenticated = true;
   }
 
   group("read: current user", () => {
