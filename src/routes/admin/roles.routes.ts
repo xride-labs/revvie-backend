@@ -94,7 +94,7 @@ router.post(
         scope,
         scopeId: scopeId || null,
         isSystem: false,
-        color: color || "#f97316",
+        color: color || "#ff1d2d",
         icon: icon || "shield",
         priority,
         permissions: {

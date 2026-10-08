@@ -58,7 +58,7 @@ export async function ensureTargetSchemaParity(
         "scope" "RoleScope" NOT NULL DEFAULT 'GLOBAL',
         "scope_id" TEXT,
         "is_system" BOOLEAN NOT NULL DEFAULT false,
-        "color" TEXT DEFAULT '#f97316',
+        "color" TEXT DEFAULT '#ff1d2d',
         "icon" TEXT DEFAULT 'shield',
         "priority" INTEGER NOT NULL DEFAULT 0,
         "created_at" TIMESTAMP NOT NULL DEFAULT now(),

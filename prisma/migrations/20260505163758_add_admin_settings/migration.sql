@@ -27,7 +27,7 @@ CREATE TABLE "admin_settings" (
     "from_name" TEXT NOT NULL DEFAULT 'Zoomies',
     "welcome_email_subject" TEXT NOT NULL DEFAULT 'Welcome to Zoomies!',
     "welcome_email_body" TEXT NOT NULL DEFAULT 'Hi {{name}}, Welcome to Zoomies!',
-    "primary_color" TEXT NOT NULL DEFAULT '#f97316',
+    "primary_color" TEXT NOT NULL DEFAULT '#ff1d2d',
     "dark_mode_default" BOOLEAN NOT NULL DEFAULT false,
     "compact_mode" BOOLEAN NOT NULL DEFAULT false,
     "created_at" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,

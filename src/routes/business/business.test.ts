@@ -55,10 +55,34 @@ async function createBusiness(
   });
 }
 
+/** Resolve a BUSINESS system role id (Task 3: BrandMember.role enum -> roleId FK). */
+async function businessRoleId(slug: string): Promise<string> {
+  const role = await prisma.role.findFirstOrThrow({
+    where: { slug: slug.toLowerCase(), scope: "BUSINESS", scopeId: null },
+    select: { id: true },
+  });
+  return role.id;
+}
+
 /** Promote a user to ADMIN (so isStaff() / requireRole(ADMIN) pass). */
 async function makeAdmin(userId: string) {
-  await prisma.userRoleAssignment.create({
-    data: { userId, role: "ADMIN" },
+  // Task 3: UserRoleAssignment.role enum -> roleId FK. Assign the GLOBAL admin
+  // role row (slug "admin"); requireAuth maps it to "ADMIN" and the business
+  // permission resolver treats it as a platform-admin bypass.
+  let adminRole = await prisma.role.findFirst({
+    where: { slug: "admin", scope: "GLOBAL" },
+    select: { id: true },
+  });
+  if (!adminRole) {
+    adminRole = await prisma.role.create({
+      data: { name: "Admin", slug: "admin", scope: "GLOBAL", isSystem: true },
+      select: { id: true },
+    });
+  }
+  await prisma.userRoleAssignment.upsert({
+    where: { userId_roleId: { userId, roleId: adminRole.id } },
+    create: { userId, roleId: adminRole.id },
+    update: {},
   });
 }
 
@@ -326,7 +350,7 @@ describe("Business Routes (/api/business)", () => {
         .send({ categories: ["GEAR_SELLER"], displayName: "Gear Hub" });
 
       const role = await prisma.userRoleAssignment.findFirst({
-        where: { userId: user.id, role: "BRAND_OWNER" },
+        where: { userId: user.id, roleRecord: { slug: "brand_owner" } },
       });
       expect(role).not.toBeNull();
     });
@@ -340,7 +364,7 @@ describe("Business Routes (/api/business)", () => {
         .send({ categories: ["CLUB"], displayName: "Riders Club" });
 
       const role = await prisma.userRoleAssignment.findFirst({
-        where: { userId: user.id, role: "BRAND_OWNER" },
+        where: { userId: user.id, roleRecord: { slug: "brand_owner" } },
       });
       expect(role).toBeNull();
     });
@@ -1323,7 +1347,7 @@ describe("Business Routes (/api/business)", () => {
         const member = await createTestUser();
         const biz = await createBusiness(owner.user.id);
         await prisma.brandMember.create({
-          data: { businessId: biz.id, userId: member.user.id, role: "MEMBER" },
+          data: { businessId: biz.id, userId: member.user.id, roleId: await businessRoleId("member") },
         });
 
         const res = await request(app)
@@ -1371,7 +1395,7 @@ describe("Business Routes (/api/business)", () => {
         expect(res.body.data.role).toBe("ADMIN");
 
         const platformRole = await prisma.userRoleAssignment.findFirst({
-          where: { userId: target.user.id, role: "BRAND_ADMIN" },
+          where: { userId: target.user.id, roleRecord: { slug: "brand_admin" } },
         });
         expect(platformRole).not.toBeNull();
       });
@@ -1426,7 +1450,7 @@ describe("Business Routes (/api/business)", () => {
           data: {
             businessId: biz.id,
             userId: plainMember.user.id,
-            role: "MEMBER",
+            roleId: await businessRoleId("member"),
           },
         });
 
@@ -1445,7 +1469,7 @@ describe("Business Routes (/api/business)", () => {
         const member = await createTestUser();
         const biz = await createBusiness(owner.user.id);
         await prisma.brandMember.create({
-          data: { businessId: biz.id, userId: member.user.id, role: "MEMBER" },
+          data: { businessId: biz.id, userId: member.user.id, roleId: await businessRoleId("member") },
         });
 
         const res = await request(app)
@@ -1473,7 +1497,7 @@ describe("Business Routes (/api/business)", () => {
         const member = await createTestUser();
         const biz = await createBusiness(owner.user.id);
         await prisma.brandMember.create({
-          data: { businessId: biz.id, userId: member.user.id, role: "MEMBER" },
+          data: { businessId: biz.id, userId: member.user.id, roleId: await businessRoleId("member") },
         });
         const res = await request(app)
           .patch(`/api/business/${biz.id}/members/${member.user.id}/role`)
@@ -1489,7 +1513,7 @@ describe("Business Routes (/api/business)", () => {
         const member = await createTestUser();
         const biz = await createBusiness(owner.user.id);
         await prisma.brandMember.create({
-          data: { businessId: biz.id, userId: member.user.id, role: "MEMBER" },
+          data: { businessId: biz.id, userId: member.user.id, roleId: await businessRoleId("member") },
         });
 
         const res = await request(app)
@@ -2050,6 +2074,243 @@ describe("Business Routes (/api/business)", () => {
           .send({ status: "CLOSED" });
         expect(res.status).toBe(403);
       });
+    });
+  });
+
+  // ───────────────────────────────────────────────────────────────────────
+  // Task 4: business permission codes enforce routes + viewer fields.
+  // ───────────────────────────────────────────────────────────────────────
+  describe("RBAC permission codes (Task 4)", () => {
+    /** Assign a GLOBAL admin role (platform-admin bypass) via the Role FK. */
+    async function grantGlobalAdmin(userId: string) {
+      let adminRole = await prisma.role.findFirst({
+        where: { slug: "admin", scope: "GLOBAL" },
+        select: { id: true },
+      });
+      if (!adminRole) {
+        adminRole = await prisma.role.create({
+          data: { name: "Admin", slug: "admin", scope: "GLOBAL", isSystem: true },
+          select: { id: true },
+        });
+      }
+      await prisma.userRoleAssignment.upsert({
+        where: { userId_roleId: { userId, roleId: adminRole.id } },
+        create: { userId, roleId: adminRole.id },
+        update: {},
+      });
+    }
+
+    it("member without manage_settings gets 403 on PATCH settings", { timeout: 120_000 }, async () => {
+      const owner = await createTestUser();
+      const member = await createTestUser();
+      const biz = await createBusiness(owner.user.id);
+      await prisma.brandMember.create({
+        data: { businessId: biz.id, userId: member.user.id, roleId: await businessRoleId("member") },
+      });
+
+      const res = await request(app)
+        .patch(`/api/business/${biz.id}`)
+        .set(auth(member.token))
+        .send({ tagline: "hijack" });
+
+      expect(res.status).toBe(403);
+    });
+
+    it("analytics requires business:view_analytics (403 without, 200 with)", { timeout: 120_000 }, async () => {
+      const owner = await createTestUser();
+      const member = await createTestUser();
+      const biz = await createBusiness(owner.user.id);
+      await prisma.brandMember.create({
+        data: { businessId: biz.id, userId: member.user.id, roleId: await businessRoleId("member") },
+      });
+
+      const denied = await request(app)
+        .get(`/api/business/${biz.id}/analytics`)
+        .set(auth(member.token));
+      expect(denied.status).toBe(403);
+
+      // Custom role granting exactly view_analytics opens the gate.
+      const created = await request(app)
+        .post(`/api/business/${biz.id}/roles`)
+        .set(auth(owner.token))
+        .send({ name: "Analyst", permissionCodes: ["business:view_analytics"] });
+      expect(created.status).toBe(201);
+
+      const assigned = await request(app)
+        .post(`/api/business/${biz.id}/members/${member.user.id}/role`)
+        .set(auth(owner.token))
+        .send({ roleId: created.body.data.role.id });
+      expect(assigned.status).toBe(200);
+
+      const allowed = await request(app)
+        .get(`/api/business/${biz.id}/analytics`)
+        .set(auth(member.token));
+      expect(allowed.status).toBe(200);
+      expect(allowed.body.data).toHaveProperty("campaigns");
+    });
+
+    it("custom role created via POST /:id/roles grants exactly its codes", { timeout: 120_000 }, async () => {
+      const owner = await createTestUser();
+      const member = await createTestUser();
+      const target = await createTestUser();
+      const biz = await createBusiness(owner.user.id);
+
+      const created = await request(app)
+        .post(`/api/business/${biz.id}/roles`)
+        .set(auth(owner.token))
+        .send({ name: "Deals Only", permissionCodes: ["business:manage_deals"] });
+      expect(created.status).toBe(201);
+      // createBusinessRole returns raw RolePermission joins ({ permission: { code } }).
+      const codes = created.body.data.role.permissions.map((p: any) => p.code ?? p.permission?.code ?? p);
+      expect(codes).toEqual(["business:manage_deals"]);
+
+      // Invite as plain member, then assign the custom role.
+      const invited = await request(app)
+        .post(`/api/business/${biz.id}/members`)
+        .set(auth(owner.token))
+        .send({ email: target.user.email, role: "MEMBER" });
+      expect(invited.status).toBe(200);
+
+      const assigned = await request(app)
+        .post(`/api/business/${biz.id}/members/${target.user.id}/role`)
+        .set(auth(owner.token))
+        .send({ roleId: created.body.data.role.id });
+      expect(assigned.status).toBe(200);
+
+      // manage_deals opens discount creation but not settings.
+      const dealRes = await request(app)
+        .post(`/api/business/${biz.id}/discounts`)
+        .set(auth(target.token))
+        .send(validDiscount());
+      expect(dealRes.status).toBe(200);
+
+      const settingsRes = await request(app)
+        .patch(`/api/business/${biz.id}`)
+        .set(auth(target.token))
+        .send({ tagline: "hijack" });
+      expect(settingsRes.status).toBe(403);
+
+      // The unassigned plain member still cannot touch deals.
+      await prisma.brandMember.create({
+        data: { businessId: biz.id, userId: member.user.id, roleId: await businessRoleId("member") },
+      });
+      const plainRes = await request(app)
+        .post(`/api/business/${biz.id}/discounts`)
+        .set(auth(member.token))
+        .send(validDiscount());
+      expect(plainRes.status).toBe(403);
+    });
+
+    it("member invite/remove requires business:manage_members", { timeout: 120_000 }, async () => {
+      const owner = await createTestUser();
+      const analyst = await createTestUser();
+      const target = await createTestUser();
+      const biz = await createBusiness(owner.user.id);
+
+      const created = await request(app)
+        .post(`/api/business/${biz.id}/roles`)
+        .set(auth(owner.token))
+        .send({ name: "Analyst", permissionCodes: ["business:view_analytics"] });
+      expect(created.status).toBe(201);
+
+      await prisma.brandMember.create({
+        data: { businessId: biz.id, userId: analyst.user.id, roleId: created.body.data.role.id },
+      });
+
+      const res = await request(app)
+        .post(`/api/business/${biz.id}/members`)
+        .set(auth(analyst.token))
+        .send({ email: target.user.email, role: "MEMBER" });
+      expect(res.status).toBe(403);
+    });
+
+    it("role endpoints require business:manage_roles", { timeout: 120_000 }, async () => {
+      const owner = await createTestUser();
+      const stranger = await createTestUser();
+      const biz = await createBusiness(owner.user.id);
+
+      const denied = await request(app)
+        .post(`/api/business/${biz.id}/roles`)
+        .set(auth(stranger.token))
+        .send({ name: "Nope", permissionCodes: ["business:view_analytics"] });
+      expect(denied.status).toBe(403);
+    });
+
+    it("role CRUD cycle works for the owner", { timeout: 120_000 }, async () => {
+      const owner = await createTestUser();
+      const biz = await createBusiness(owner.user.id);
+
+      const permsRes = await request(app)
+        .get(`/api/business/${biz.id}/roles/permissions`)
+        .set(auth(owner.token));
+      expect(permsRes.status).toBe(200);
+      const allCodes = permsRes.body.data.permissions.map((p: any) => p.code);
+      expect(allCodes).toContain("business:manage_roles");
+
+      const listRes = await request(app)
+        .get(`/api/business/${biz.id}/roles`)
+        .set(auth(owner.token));
+      expect(listRes.status).toBe(200);
+      const slugs = listRes.body.data.roles.map((r: any) => r.slug);
+      expect(slugs).toContain("owner");
+      expect(slugs).toContain("member");
+
+      const created = await request(app)
+        .post(`/api/business/${biz.id}/roles`)
+        .set(auth(owner.token))
+        .send({ name: "Deals Only", permissionCodes: ["business:manage_deals"] });
+      expect(created.status).toBe(201);
+      const roleId = created.body.data.role.id as string;
+
+      const updated = await request(app)
+        .patch(`/api/business/${biz.id}/roles/${roleId}`)
+        .set(auth(owner.token))
+        .send({ name: "Deals Plus", permissionCodes: ["business:manage_deals", "business:view_analytics"] });
+      expect(updated.status).toBe(200);
+      expect(updated.body.data.role.name).toBe("Deals Plus");
+
+      const deleted = await request(app)
+        .delete(`/api/business/${biz.id}/roles/${roleId}`)
+        .set(auth(owner.token));
+      expect(deleted.status).toBe(200);
+
+      const relist = await request(app)
+        .get(`/api/business/${biz.id}/roles`)
+        .set(auth(owner.token));
+      expect(relist.body.data.roles.map((r: any) => r.id)).not.toContain(roleId);
+    });
+
+    it("GET /:id details include viewerPermissions with the caller's codes", { timeout: 120_000 }, async () => {
+      const owner = await createTestUser();
+      const stranger = await createTestUser();
+      const biz = await createBusiness(owner.user.id, { verification: "APPROVED" });
+
+      const ownerRes = await request(app)
+        .get(`/api/business/${biz.id}`)
+        .set(auth(owner.token));
+      expect(ownerRes.status).toBe(200);
+      expect(ownerRes.body.data.viewerPermissions).toContain("business:manage_roles");
+      expect(ownerRes.body.data.viewerRole).toBe("OWNER");
+
+      const strangerRes = await request(app)
+        .get(`/api/business/${biz.id}`)
+        .set(auth(stranger.token));
+      expect(strangerRes.status).toBe(200);
+      expect(strangerRes.body.data.viewerPermissions).toEqual([]);
+    });
+
+    it("platform admin bypasses business gates", { timeout: 120_000 }, async () => {
+      const owner = await createTestUser();
+      const admin = await createTestUser();
+      await grantGlobalAdmin(admin.user.id);
+      const biz = await createBusiness(owner.user.id);
+
+      const res = await request(app)
+        .patch(`/api/business/${biz.id}`)
+        .set(auth(admin.token))
+        .send({ tagline: "Edited by admin" });
+      expect(res.status).toBe(200);
+      expect(res.body.data.tagline).toBe("Edited by admin");
     });
   });
 });

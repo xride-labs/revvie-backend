@@ -175,6 +175,27 @@ const ALL_PERMISSIONS: PermissionDef[] = [
     scope: "BUSINESS",
     description: "View sales, inquiries, deal redemptions, and listing views",
   },
+  {
+    code: "business:manage_settings",
+    name: "Manage Business Settings",
+    category: "Business Management",
+    scope: "BUSINESS",
+    description: "Edit brand profile, verification, and business configuration",
+  },
+  {
+    code: "business:manage_members",
+    name: "Manage Business Members",
+    category: "Business Management",
+    scope: "BUSINESS",
+    description: "Invite, remove, and manage brand team members",
+  },
+  {
+    code: "business:manage_roles",
+    name: "Manage Business Roles",
+    category: "Business Management",
+    scope: "BUSINESS",
+    description: "Create custom brand roles and assign them to members",
+  },
 
   // ── Rider / General User ──
   {
@@ -521,6 +542,68 @@ const STANDARD_CLUB_ROLES: SystemRoleDef[] = [
   },
 ];
 
+const STANDARD_BUSINESS_ROLES: SystemRoleDef[] = [
+  {
+    name: "Business Owner",
+    slug: "owner",
+    scope: "BUSINESS",
+    color: "#F59E0B",
+    icon: "crown",
+    priority: 100,
+    description: "Full control of the business",
+    permissionCodes: [
+      "business:manage",
+      "business:manage_settings",
+      "business:manage_members",
+      "business:manage_roles",
+      "business:manage_listings",
+      "business:manage_deals",
+      "business:view_analytics",
+    ],
+  },
+  {
+    name: "Business Admin",
+    slug: "admin",
+    scope: "BUSINESS",
+    color: "#EF4444",
+    icon: "shield",
+    priority: 80,
+    description: "Manage team, inventory, and campaigns",
+    permissionCodes: [
+      "business:manage",
+      "business:manage_settings",
+      "business:manage_members",
+      "business:manage_listings",
+      "business:manage_deals",
+      "business:view_analytics",
+    ],
+  },
+  {
+    name: "Business Moderator",
+    slug: "moderator",
+    scope: "BUSINESS",
+    color: "#3B82F6",
+    icon: "eye",
+    priority: 60,
+    description: "Inventory and campaign operations",
+    permissionCodes: [
+      "business:manage_listings",
+      "business:manage_deals",
+      "business:view_analytics",
+    ],
+  },
+  {
+    name: "Business Member",
+    slug: "member",
+    scope: "BUSINESS",
+    color: "#8E8E93",
+    icon: "user",
+    priority: 10,
+    description: "Read-only team member",
+    permissionCodes: [],
+  },
+];
+
 export async function runRbacMigration() {
   console.log("🚀 [RBAC Migration] Starting dynamic roles & permissions migration...");
 
@@ -559,7 +642,7 @@ export async function runRbacMigration() {
       "scope" "RoleScope" NOT NULL DEFAULT 'GLOBAL',
       "scope_id" TEXT,
       "is_system" BOOLEAN NOT NULL DEFAULT false,
-      "color" TEXT DEFAULT '#f97316',
+      "color" TEXT DEFAULT '#ff1d2d',
       "icon" TEXT DEFAULT 'shield',
       "priority" INTEGER NOT NULL DEFAULT 0,
       "created_at" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -620,7 +703,7 @@ export async function runRbacMigration() {
     if (existing && existing.length > 0) {
       id = existing[0].id;
       await prisma.$executeRawUnsafe(
-        `UPDATE "permissions" SET "name" = $1, "description" = $2, "category" = $3, "scope" = $4::"PermissionScope", "is_system" = true WHERE "id" = $5`,
+        `UPDATE "permissions" SET "name" = $1, "description" = $2, "category" = $3, "scope" = $4::"PermissionScope", "is_system" = true, "updated_at" = CURRENT_TIMESTAMP WHERE "id" = $5`,
         perm.name,
         perm.description,
         perm.category,
@@ -630,8 +713,8 @@ export async function runRbacMigration() {
     } else {
       id = `perm_${perm.code.replace(/[^a-zA-Z0-9]/g, "_")}`;
       await prisma.$executeRawUnsafe(
-        `INSERT INTO "permissions" ("id", "code", "name", "description", "category", "scope", "is_system")
-         VALUES ($1, $2, $3, $4, $5, $6::"PermissionScope", true)`,
+        `INSERT INTO "permissions" ("id", "code", "name", "description", "category", "scope", "is_system", "updated_at")
+         VALUES ($1, $2, $3, $4, $5, $6::"PermissionScope", true, CURRENT_TIMESTAMP)`,
         id,
         perm.code,
         perm.name,
@@ -658,7 +741,7 @@ export async function runRbacMigration() {
     if (existing && existing.length > 0) {
       roleId = existing[0].id;
       await prisma.$executeRawUnsafe(
-        `UPDATE "roles" SET "name" = $1, "description" = $2, "color" = $3, "icon" = $4, "priority" = $5, "is_system" = true WHERE "id" = $6`,
+        `UPDATE "roles" SET "name" = $1, "description" = $2, "color" = $3, "icon" = $4, "priority" = $5, "is_system" = true, "updated_at" = CURRENT_TIMESTAMP WHERE "id" = $6`,
         roleDef.name,
         roleDef.description,
         roleDef.color,
@@ -669,8 +752,8 @@ export async function runRbacMigration() {
     } else {
       roleId = `role_sys_${roleDef.slug}`;
       await prisma.$executeRawUnsafe(
-        `INSERT INTO "roles" ("id", "name", "slug", "description", "scope", "scope_id", "is_system", "color", "icon", "priority")
-         VALUES ($1, $2, $3, $4, 'GLOBAL'::"RoleScope", NULL, true, $5, $6, $7)`,
+        `INSERT INTO "roles" ("id", "name", "slug", "description", "scope", "scope_id", "is_system", "color", "icon", "priority", "updated_at")
+         VALUES ($1, $2, $3, $4, 'GLOBAL'::"RoleScope", NULL, true, $5, $6, $7, CURRENT_TIMESTAMP)`,
         roleId,
         roleDef.name,
         roleDef.slug,
@@ -710,7 +793,7 @@ export async function runRbacMigration() {
     if (existing && existing.length > 0) {
       roleId = existing[0].id;
       await prisma.$executeRawUnsafe(
-        `UPDATE "roles" SET "name" = $1, "description" = $2, "color" = $3, "icon" = $4, "priority" = $5, "is_system" = true WHERE "id" = $6`,
+        `UPDATE "roles" SET "name" = $1, "description" = $2, "color" = $3, "icon" = $4, "priority" = $5, "is_system" = true, "updated_at" = CURRENT_TIMESTAMP WHERE "id" = $6`,
         roleDef.name,
         roleDef.description,
         roleDef.color,
@@ -721,8 +804,8 @@ export async function runRbacMigration() {
     } else {
       roleId = `role_club_${roleDef.slug}`;
       await prisma.$executeRawUnsafe(
-        `INSERT INTO "roles" ("id", "name", "slug", "description", "scope", "scope_id", "is_system", "color", "icon", "priority")
-         VALUES ($1, $2, $3, $4, 'CLUB'::"RoleScope", NULL, true, $5, $6, $7)`,
+        `INSERT INTO "roles" ("id", "name", "slug", "description", "scope", "scope_id", "is_system", "color", "icon", "priority", "updated_at")
+         VALUES ($1, $2, $3, $4, 'CLUB'::"RoleScope", NULL, true, $5, $6, $7, CURRENT_TIMESTAMP)`,
         roleId,
         roleDef.name,
         roleDef.slug,
@@ -733,6 +816,57 @@ export async function runRbacMigration() {
       );
     }
     roleIdMap.set(`club:${roleDef.slug}`, roleId);
+
+    for (const code of roleDef.permissionCodes) {
+      const permId = permissionIdMap.get(code);
+      if (permId) {
+        await prisma.$executeRawUnsafe(
+          `INSERT INTO "role_permissions" ("id", "role_id", "permission_id")
+           VALUES ($1, $2, $3)
+           ON CONFLICT ("role_id", "permission_id") DO NOTHING`,
+          `rp_${roleId}_${permId}`,
+          roleId,
+          permId
+        );
+      }
+    }
+  }
+
+  // 4b. Seed Standard Business-Scoped Roles
+  console.log("🏪 4b. Upserting standard business-scoped roles...");
+  for (const roleDef of STANDARD_BUSINESS_ROLES) {
+    const existing = await prisma.$queryRawUnsafe<Array<{ id: string }>>(
+      `SELECT "id" FROM "roles" WHERE "slug" = $1 AND "scope" = 'BUSINESS' AND "scope_id" IS NULL LIMIT 1`,
+      roleDef.slug
+    );
+
+    let roleId: string;
+    if (existing && existing.length > 0) {
+      roleId = existing[0].id;
+      await prisma.$executeRawUnsafe(
+        `UPDATE "roles" SET "name" = $1, "description" = $2, "color" = $3, "icon" = $4, "priority" = $5, "is_system" = true, "updated_at" = CURRENT_TIMESTAMP WHERE "id" = $6`,
+        roleDef.name,
+        roleDef.description,
+        roleDef.color,
+        roleDef.icon,
+        roleDef.priority,
+        roleId
+      );
+    } else {
+      roleId = `role_business_${roleDef.slug}`;
+      await prisma.$executeRawUnsafe(
+      `INSERT INTO "roles" ("id", "name", "slug", "description", "scope", "scope_id", "is_system", "color", "icon", "priority", "updated_at")
+       VALUES ($1, $2, $3, $4, 'BUSINESS'::"RoleScope", NULL, true, $5, $6, $7, CURRENT_TIMESTAMP)`,
+        roleId,
+        roleDef.name,
+        roleDef.slug,
+        roleDef.description,
+        roleDef.color,
+        roleDef.icon,
+        roleDef.priority
+      );
+    }
+    roleIdMap.set(`business:${roleDef.slug}`, roleId);
 
     for (const code of roleDef.permissionCodes) {
       const permId = permissionIdMap.get(code);

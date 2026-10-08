@@ -218,6 +218,57 @@ const ALL_PERMISSIONS: PermissionDef[] = [
     scope: "CLUB",
     description: "Participate in club discussions, view members, and join rides",
   },
+
+  // ── Business & Brand ──
+  {
+    code: "business:manage",
+    name: "Manage Business Profile",
+    category: "Business Management",
+    scope: "BUSINESS",
+    description: "Manage brand profile, hours, contacts, and branch locations",
+  },
+  {
+    code: "business:manage_listings",
+    name: "Manage Inventory",
+    category: "Business Management",
+    scope: "BUSINESS",
+    description: "Create, edit, and manage marketplace listings and inventory",
+  },
+  {
+    code: "business:manage_deals",
+    name: "Manage Deals & Campaigns",
+    category: "Business Management",
+    scope: "BUSINESS",
+    description: "Create, schedule, and publish discount coupons and ad banners",
+  },
+  {
+    code: "business:view_analytics",
+    name: "View Business Analytics",
+    category: "Business Management",
+    scope: "BUSINESS",
+    description: "View sales, inquiries, deal redemptions, and listing views",
+  },
+  {
+    code: "business:manage_settings",
+    name: "Manage Business Settings",
+    category: "Business Management",
+    scope: "BUSINESS",
+    description: "Edit brand profile, verification, and business configuration",
+  },
+  {
+    code: "business:manage_members",
+    name: "Manage Business Members",
+    category: "Business Management",
+    scope: "BUSINESS",
+    description: "Invite, remove, and manage brand team members",
+  },
+  {
+    code: "business:manage_roles",
+    name: "Manage Business Roles",
+    category: "Business Management",
+    scope: "BUSINESS",
+    description: "Create custom brand roles and assign them to members",
+  },
 ];
 
 interface SystemRoleDef {
@@ -441,6 +492,68 @@ const STANDARD_CLUB_ROLES: SystemRoleDef[] = [
   },
 ];
 
+const STANDARD_BUSINESS_ROLES: SystemRoleDef[] = [
+  {
+    slug: "owner",
+    name: "Business Owner",
+    description: "Full control of the business",
+    scope: "BUSINESS",
+    color: "#F59E0B",
+    icon: "crown",
+    priority: 100,
+    permissions: [
+      "business:manage",
+      "business:manage_settings",
+      "business:manage_members",
+      "business:manage_roles",
+      "business:manage_listings",
+      "business:manage_deals",
+      "business:view_analytics",
+    ],
+  },
+  {
+    slug: "admin",
+    name: "Business Admin",
+    description: "Manage team, inventory, and campaigns",
+    scope: "BUSINESS",
+    color: "#EF4444",
+    icon: "shield",
+    priority: 80,
+    permissions: [
+      "business:manage",
+      "business:manage_settings",
+      "business:manage_members",
+      "business:manage_listings",
+      "business:manage_deals",
+      "business:view_analytics",
+    ],
+  },
+  {
+    slug: "moderator",
+    name: "Business Moderator",
+    description: "Inventory and campaign operations",
+    scope: "BUSINESS",
+    color: "#3B82F6",
+    icon: "eye",
+    priority: 60,
+    permissions: [
+      "business:manage_listings",
+      "business:manage_deals",
+      "business:view_analytics",
+    ],
+  },
+  {
+    slug: "member",
+    name: "Business Member",
+    description: "Read-only team member",
+    scope: "BUSINESS",
+    color: "#8E8E93",
+    icon: "user",
+    priority: 10,
+    permissions: [],
+  },
+];
+
 async function migrateProduction() {
   console.log("🚀 Starting Production Database Migration on Supabase...");
   const pool = new pg.Pool({ connectionString, ssl: { rejectUnauthorized: false } });
@@ -484,7 +597,7 @@ async function migrateProduction() {
         scope "RoleScope" NOT NULL DEFAULT 'GLOBAL',
         scope_id text,
         is_system boolean NOT NULL DEFAULT false,
-        color text DEFAULT '#f97316',
+        color text DEFAULT '#ff1d2d',
         icon text DEFAULT 'shield',
         priority integer NOT NULL DEFAULT 0,
         created_at timestamp without time zone NOT NULL DEFAULT now(),
@@ -512,10 +625,10 @@ async function migrateProduction() {
     for (const p of ALL_PERMISSIONS) {
       const res = await client.query(
         `
-        INSERT INTO permissions (id, code, name, category, scope, description)
-        VALUES (gen_random_uuid(), $1, $2, $3, $4::"PermissionScope", $5)
+        INSERT INTO permissions (id, code, name, category, scope, description, updated_at)
+        VALUES (gen_random_uuid(), $1, $2, $3, $4::"PermissionScope", $5, now())
         ON CONFLICT (code) DO UPDATE
-        SET name = EXCLUDED.name, category = EXCLUDED.category, scope = EXCLUDED.scope, description = EXCLUDED.description
+        SET name = EXCLUDED.name, category = EXCLUDED.category, scope = EXCLUDED.scope, description = EXCLUDED.description, updated_at = now()
         RETURNING id, code;
         `,
         [p.code, p.name, p.category, p.scope, p.description]
@@ -526,13 +639,13 @@ async function migrateProduction() {
 
     console.log("4️⃣ Seeding Global System Roles & Standard Club Roles...");
     const roleMap = new Map<string, string>(); // slug:scope -> id
-    const allRoles = [...GLOBAL_SYSTEM_ROLES, ...STANDARD_CLUB_ROLES];
+    const allRoles = [...GLOBAL_SYSTEM_ROLES, ...STANDARD_CLUB_ROLES, ...STANDARD_BUSINESS_ROLES];
 
     for (const r of allRoles) {
       const res = await client.query(
         `
-        INSERT INTO roles (id, name, slug, description, scope, scope_id, is_system, color, icon, priority)
-        VALUES (gen_random_uuid(), $1, $2, $3, $4::"RoleScope", NULL, true, $5, $6, $7)
+        INSERT INTO roles (id, name, slug, description, scope, scope_id, is_system, color, icon, priority, updated_at)
+        VALUES (gen_random_uuid(), $1, $2, $3, $4::"RoleScope", NULL, true, $5, $6, $7, now())
         ON CONFLICT (slug, scope, scope_id) DO UPDATE
         SET name = EXCLUDED.name, description = EXCLUDED.description, is_system = true,
             color = EXCLUDED.color, icon = EXCLUDED.icon, priority = EXCLUDED.priority, updated_at = now()

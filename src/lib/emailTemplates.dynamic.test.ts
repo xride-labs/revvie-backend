@@ -9,7 +9,7 @@ import { BrandingConfig } from "../services/branding/branding.types.js";
 const customBranding: BrandingConfig = {
   siteName: "Revvie Motorsports",
   siteUrl: "https://motorsports.revvie.app",
-  supportEmail: "support@revvie.app",
+  supportEmail: "support@xride-labs.in",
   tagline: "SPEED • PASSION • COMMUNITY",
   logoUrl: "https://cdn.custom.com/brand/logo.png",
   iconUrl: "https://cdn.custom.com/brand/icon.png",

@@ -1,4 +1,4 @@
-import { Router, Request, Response } from "express";
+import { Router, Request, Response, NextFunction } from "express";
 import { z } from "zod";
 import prisma from "../../lib/prisma.js";
 import { requireAuth } from "../../config/auth.js";
@@ -9,7 +9,12 @@ import {
   validateParams,
   asyncHandler,
 } from "../../middlewares/validation.js";
-import { requireRole, UserRole } from "../../middlewares/rbac.js";
+import {
+  requireBusinessPermission,
+  requireRole,
+  UserRole,
+} from "../../middlewares/rbac.js";
+import { RolesService } from "../../services/roles.service.js";
 import { isStaff } from "../../lib/utils/permissions.js";
 import adsRoutes from "../ads/ads.routes.js";
 import discountRoutes from "../discount/discount.routes.js";
@@ -116,6 +121,51 @@ function slugify(name: string): string {
   return `${base || "business"}-${suffix}`;
 }
 
+// ─── Task 4: existence gate shared by every guarded :id route ───────────────
+// Runs before requireBusinessPermission so a missing business stays 404
+// (not 403), preserving the pre-RBAC ensureBusinessOwner/Access behavior.
+// Attaches the row as req.business for handlers to reuse.
+async function requireBusinessExists(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+) {
+  const { id } = req.params;
+  if (!id) return next();
+  const business = await prisma.businessProfile.findUnique({
+    where: { id },
+    select: {
+      id: true,
+      ownerId: true,
+      verification: true,
+      categories: true,
+      documents: true,
+      displayName: true,
+      description: true,
+      phone: true,
+      email: true,
+    },
+  });
+  if (!business) return ApiResponse.notFound(res, "Business not found");
+  (req as any).business = business;
+  next();
+}
+
+// Sync readers over req.business (guaranteed present by requireBusinessExists).
+// Shapes mirror the old ensureBusinessOwner/ensureBusinessAccess returns so
+// handler bodies stay unchanged.
+function businessCtx(req: Request): { businessId: string; ownerId: string } {
+  const b = (req as any).business;
+  return { businessId: b.id, ownerId: b.ownerId };
+}
+
+function accessCtx(req: Request): {
+  business: { id: string; ownerId: string };
+} {
+  const b = (req as any).business;
+  return { business: { id: b.id, ownerId: b.ownerId } };
+}
+
 // ─── Public discovery (auth still required so anonymous traffic can't scrape)
 
 router.get(
@@ -199,7 +249,28 @@ router.get(
       return ApiResponse.notFound(res, "Business not found");
     }
 
-    ApiResponse.success(res, business);
+    // Task 4: expose the caller's effective permissions (mirror club details
+    // viewerPermissions/viewerCustomRole via RolesService.getBusinessPermissions).
+    // viewerRole keeps the legacy ADMIN-style upper-cased slug form.
+    const [memberRole, viewer] = await Promise.all([
+      prisma.brandMember.findUnique({
+        where: {
+          businessId_userId: { businessId: id, userId: session.user.id },
+        },
+        select: { role: { select: { slug: true } } },
+      }),
+      RolesService.getBusinessPermissions(session.user.id, id),
+    ]);
+    const viewerRole = isOwner
+      ? "OWNER"
+      : (memberRole?.role.slug.toUpperCase() ?? null);
+
+    ApiResponse.success(res, {
+      ...business,
+      viewerRole,
+      viewerPermissions: viewer.permissions,
+      viewerCustomRole: viewer.role,
+    });
   }),
 );
 
@@ -280,19 +351,13 @@ router.patch(
   "/:id",
   requireAuth,
   validateParams(idParamSchema),
+  requireBusinessExists,
   validateBody(updateBusinessSchema),
+  requireBusinessPermission("business:manage_settings"),
   asyncHandler(async (req: Request, res: Response) => {
-    const session = (req as any).session;
     const { id } = req.params;
 
-    const existing = await prisma.businessProfile.findUnique({ where: { id } });
-    if (!existing) return ApiResponse.notFound(res, "Business not found");
-    if (existing.ownerId !== session.user.id && !isStaff(session.user.roles)) {
-      return ApiResponse.forbidden(
-        res,
-        "Only the owner can update this business",
-      );
-    }
+    const existing = (req as any).business;
 
     // Once approved, owners can still edit content (logo, description, etc.)
     // but changing categories requires a new review cycle.
@@ -326,16 +391,13 @@ router.post(
   "/:id/documents",
   requireAuth,
   validateParams(idParamSchema),
+  requireBusinessExists,
   validateBody(documentsSchema),
+  requireBusinessPermission("business:manage_settings"),
   asyncHandler(async (req: Request, res: Response) => {
-    const session = (req as any).session;
     const { id } = req.params;
 
-    const existing = await prisma.businessProfile.findUnique({ where: { id } });
-    if (!existing) return ApiResponse.notFound(res, "Business not found");
-    if (existing.ownerId !== session.user.id && !isStaff(session.user.roles)) {
-      return ApiResponse.forbidden(res, "Only the owner can attach documents");
-    }
+    const existing = (req as any).business;
 
     const incoming = req.body.documents.map((d: any) => ({
       ...d,
@@ -358,15 +420,12 @@ router.post(
   "/:id/submit",
   requireAuth,
   validateParams(idParamSchema),
+  requireBusinessExists,
+  requireBusinessPermission("business:manage_settings"),
   asyncHandler(async (req: Request, res: Response) => {
-    const session = (req as any).session;
     const { id } = req.params;
 
-    const existing = await prisma.businessProfile.findUnique({ where: { id } });
-    if (!existing) return ApiResponse.notFound(res, "Business not found");
-    if (existing.ownerId !== session.user.id && !isStaff(session.user.roles)) {
-      return ApiResponse.forbidden(res, "Only the owner can submit for review");
-    }
+    const existing = (req as any).business;
     if (existing.verification === "APPROVED") {
       return ApiResponse.conflict(res, "Business is already approved");
     }
@@ -470,34 +529,14 @@ const cidParamSchema = z.object({
   cid: z.string().min(1),
 });
 
-async function ensureBusinessOwner(
-  req: Request,
-  res: Response,
-): Promise<{ businessId: string; ownerId: string } | null> {
-  const session = (req as any).session;
-  const { id } = req.params;
-  const business = await prisma.businessProfile.findUnique({
-    where: { id },
-    select: { id: true, ownerId: true, verification: true },
-  });
-  if (!business) {
-    ApiResponse.notFound(res, "Business not found");
-    return null;
-  }
-  if (business.ownerId !== session.user.id && !isStaff(session.user.roles)) {
-    ApiResponse.forbidden(res, "Only the owner can manage this business");
-    return null;
-  }
-  return { businessId: business.id, ownerId: business.ownerId };
-}
-
 router.get(
   "/:id/campaigns",
   requireAuth,
   validateParams(idParamSchema),
+  requireBusinessExists,
+  requireBusinessPermission("business:manage_deals"),
   asyncHandler(async (req: Request, res: Response) => {
-    const ctx = await ensureBusinessOwner(req, res);
-    if (!ctx) return;
+    const ctx = businessCtx(req);
     const items = await prisma.adCampaign.findMany({
       where: { businessId: ctx.businessId },
       orderBy: { createdAt: "desc" },
@@ -510,10 +549,11 @@ router.post(
   "/:id/campaigns",
   requireAuth,
   validateParams(idParamSchema),
+  requireBusinessExists,
   validateBody(createCampaignSchema),
+  requireBusinessPermission("business:manage_deals"),
   asyncHandler(async (req: Request, res: Response) => {
-    const ctx = await ensureBusinessOwner(req, res);
-    if (!ctx) return;
+    const ctx = businessCtx(req);
     // New campaigns start as PENDING_APPROVAL — admin moderates the
     // transition to ACTIVE. Owners can keep editing while pending; once
     // ACTIVE the admin endpoints are the only way to change status.
@@ -534,10 +574,11 @@ router.patch(
   "/:id/campaigns/:cid",
   requireAuth,
   validateParams(cidParamSchema),
+  requireBusinessExists,
   validateBody(updateCampaignSchema),
+  requireBusinessPermission("business:manage_deals"),
   asyncHandler(async (req: Request, res: Response) => {
-    const ctx = await ensureBusinessOwner(req, res);
-    if (!ctx) return;
+    const ctx = businessCtx(req);
     const { cid } = req.params;
     const existing = await prisma.adCampaign.findUnique({ where: { id: cid } });
     if (!existing || existing.businessId !== ctx.businessId) {
@@ -564,9 +605,10 @@ router.delete(
   "/:id/campaigns/:cid",
   requireAuth,
   validateParams(cidParamSchema),
+  requireBusinessExists,
+  requireBusinessPermission("business:manage_deals"),
   asyncHandler(async (req: Request, res: Response) => {
-    const ctx = await ensureBusinessOwner(req, res);
-    if (!ctx) return;
+    const ctx = businessCtx(req);
     const { cid } = req.params;
     const existing = await prisma.adCampaign.findUnique({ where: { id: cid } });
     if (!existing || existing.businessId !== ctx.businessId) {
@@ -618,9 +660,10 @@ router.get(
   "/:id/discounts",
   requireAuth,
   validateParams(idParamSchema),
+  requireBusinessExists,
+  requireBusinessPermission("business:manage_deals"),
   asyncHandler(async (req: Request, res: Response) => {
-    const ctx = await ensureBusinessOwner(req, res);
-    if (!ctx) return;
+    const ctx = businessCtx(req);
     const items = await prisma.discount.findMany({
       where: { businessId: ctx.businessId },
       orderBy: { createdAt: "desc" },
@@ -633,10 +676,11 @@ router.post(
   "/:id/discounts",
   requireAuth,
   validateParams(idParamSchema),
+  requireBusinessExists,
   validateBody(createDiscountSchema),
+  requireBusinessPermission("business:manage_deals"),
   asyncHandler(async (req: Request, res: Response) => {
-    const ctx = await ensureBusinessOwner(req, res);
-    if (!ctx) return;
+    const ctx = businessCtx(req);
     const created = await prisma.discount.create({
       data: {
         businessId: ctx.businessId,
@@ -653,10 +697,11 @@ router.patch(
   "/:id/discounts/:did",
   requireAuth,
   validateParams(didParamSchema),
+  requireBusinessExists,
   validateBody(updateDiscountSchema),
+  requireBusinessPermission("business:manage_deals"),
   asyncHandler(async (req: Request, res: Response) => {
-    const ctx = await ensureBusinessOwner(req, res);
-    if (!ctx) return;
+    const ctx = businessCtx(req);
     const { did } = req.params;
     const existing = await prisma.discount.findUnique({ where: { id: did } });
     if (!existing || existing.businessId !== ctx.businessId) {
@@ -674,9 +719,10 @@ router.delete(
   "/:id/discounts/:did",
   requireAuth,
   validateParams(didParamSchema),
+  requireBusinessExists,
+  requireBusinessPermission("business:manage_deals"),
   asyncHandler(async (req: Request, res: Response) => {
-    const ctx = await ensureBusinessOwner(req, res);
-    if (!ctx) return;
+    const ctx = businessCtx(req);
     const { did } = req.params;
     const existing = await prisma.discount.findUnique({ where: { id: did } });
     if (!existing || existing.businessId !== ctx.businessId) {
@@ -693,9 +739,10 @@ router.get(
   "/:id/analytics",
   requireAuth,
   validateParams(idParamSchema),
+  requireBusinessExists,
+  requireBusinessPermission("business:view_analytics"),
   asyncHandler(async (req: Request, res: Response) => {
-    const ctx = await ensureBusinessOwner(req, res);
-    if (!ctx) return;
+    const ctx = businessCtx(req);
 
     const [campaignCount, discountCount, listingCount, impressions, clicks] =
       await Promise.all([
@@ -728,9 +775,10 @@ router.get(
   "/:id/listings",
   requireAuth,
   validateParams(idParamSchema),
+  requireBusinessExists,
+  requireBusinessPermission("business:manage_listings"),
   asyncHandler(async (req: Request, res: Response) => {
-    const ctx = await ensureBusinessOwner(req, res);
-    if (!ctx) return;
+    const ctx = businessCtx(req);
 
     const page = parseInt((req.query.page as string) || "1", 10);
     const limit = parseInt((req.query.limit as string) || "20", 10);
@@ -755,51 +803,6 @@ router.get(
   }),
 );
 
-// ─── Helper: check owner OR team member ────────────────────────────────────
-// Returns the business if the session user is the owner or an active member.
-// minRole: null = any member, "ADMIN" = admin or owner only.
-
-async function ensureBusinessAccess(
-  req: Request,
-  res: Response,
-  minRole: "ADMIN" | null = null,
-): Promise<{
-  business: { id: string; ownerId: string; verification: string };
-} | null> {
-  const session = (req as any).session;
-  const { id } = req.params;
-
-  const business = await prisma.businessProfile.findUnique({
-    where: { id },
-    select: { id: true, ownerId: true, verification: true },
-  });
-  if (!business) {
-    ApiResponse.notFound(res, "Business not found");
-    return null;
-  }
-
-  if (business.ownerId === session.user.id || isStaff(session.user.roles)) {
-    return { business };
-  }
-
-  const member = await prisma.brandMember.findUnique({
-    where: { businessId_userId: { businessId: id, userId: session.user.id } },
-    select: { role: true },
-  });
-
-  if (!member) {
-    ApiResponse.forbidden(res, "Access denied");
-    return null;
-  }
-
-  if (minRole === "ADMIN" && !["OWNER", "ADMIN"].includes(member.role)) {
-    ApiResponse.forbidden(res, "Admin or owner role required");
-    return null;
-  }
-
-  return { business };
-}
-
 // ─── Team members ──────────────────────────────────────────────────────────
 
 const inviteMemberSchema = z.object({
@@ -820,9 +823,10 @@ router.get(
   "/:id/members",
   requireAuth,
   validateParams(idParamSchema),
+  requireBusinessExists,
+  requireBusinessPermission("business:manage_members"),
   asyncHandler(async (req: Request, res: Response) => {
-    const ctx = await ensureBusinessAccess(req, res);
-    if (!ctx) return;
+    const ctx = accessCtx(req);
     const members = await prisma.brandMember.findMany({
       where: { businessId: ctx.business.id },
       include: {
@@ -838,11 +842,12 @@ router.post(
   "/:id/members",
   requireAuth,
   validateParams(idParamSchema),
+  requireBusinessExists,
   validateBody(inviteMemberSchema),
+  requireBusinessPermission("business:manage_members"),
   asyncHandler(async (req: Request, res: Response) => {
     const session = (req as any).session;
-    const ctx = await ensureBusinessAccess(req, res, "ADMIN");
-    if (!ctx) return;
+    const ctx = accessCtx(req);
 
     const { email, role } = req.body;
     const target = await prisma.user.findFirst({
@@ -856,6 +861,16 @@ router.post(
       return ApiResponse.conflict(res, "Owner is already a member");
     }
 
+    // Task 3 (minimal): BrandMember now points at a BUSINESS system Role row.
+    // The API still accepts the legacy enum-style names; Task 4 redesigns this.
+    const businessRole = await prisma.role.findFirst({
+      where: { slug: role.toLowerCase(), scope: "BUSINESS", scopeId: null },
+      select: { id: true },
+    });
+    if (!businessRole) {
+      return ApiResponse.internalError(res, `Unknown business role "${role}"`);
+    }
+
     const member = await prisma.brandMember.upsert({
       where: {
         businessId_userId: { businessId: ctx.business.id, userId: target.id },
@@ -863,10 +878,10 @@ router.post(
       create: {
         businessId: ctx.business.id,
         userId: target.id,
-        role,
+        roleId: businessRole.id,
         invitedBy: session.user.id,
       },
-      update: { role },
+      update: { roleId: businessRole.id },
       include: {
         user: { select: { id: true, name: true, email: true, avatar: true } },
       },
@@ -905,7 +920,7 @@ router.post(
       });
     }
 
-    ApiResponse.success(res, member, "Member added");
+    ApiResponse.success(res, { ...member, role }, "Member added");
   }),
 );
 
@@ -913,10 +928,11 @@ router.patch(
   "/:id/members/:uid/role",
   requireAuth,
   validateParams(memberParamSchema),
+  requireBusinessExists,
   validateBody(updateMemberRoleSchema),
+  requireBusinessPermission("business:manage_members"),
   asyncHandler(async (req: Request, res: Response) => {
-    const ctx = await ensureBusinessAccess(req, res, "ADMIN");
-    if (!ctx) return;
+    const ctx = accessCtx(req);
     const { uid } = req.params;
     const existing = await prisma.brandMember.findUnique({
       where: {
@@ -925,16 +941,24 @@ router.patch(
     });
     if (!existing) return ApiResponse.notFound(res, "Member not found");
 
+    const nextRole = await prisma.role.findFirst({
+      where: { slug: req.body.role.toLowerCase(), scope: "BUSINESS", scopeId: null },
+      select: { id: true },
+    });
+    if (!nextRole) {
+      return ApiResponse.internalError(res, `Unknown business role "${req.body.role}"`);
+    }
+
     const updated = await prisma.brandMember.update({
       where: {
         businessId_userId: { businessId: ctx.business.id, userId: uid },
       },
-      data: { role: req.body.role },
+      data: { roleId: nextRole.id },
       include: {
         user: { select: { id: true, name: true, email: true, avatar: true } },
       },
     });
-    ApiResponse.success(res, updated, "Role updated");
+    ApiResponse.success(res, { ...updated, role: req.body.role }, "Role updated");
   }),
 );
 
@@ -942,9 +966,10 @@ router.delete(
   "/:id/members/:uid",
   requireAuth,
   validateParams(memberParamSchema),
+  requireBusinessExists,
+  requireBusinessPermission("business:manage_members"),
   asyncHandler(async (req: Request, res: Response) => {
-    const ctx = await ensureBusinessAccess(req, res, "ADMIN");
-    if (!ctx) return;
+    const ctx = accessCtx(req);
     const { uid } = req.params;
     if (uid === ctx.business.ownerId) {
       return ApiResponse.forbidden(res, "Cannot remove the owner");
@@ -1038,10 +1063,11 @@ router.post(
   "/:id/services",
   requireAuth,
   validateParams(idParamSchema),
+  requireBusinessExists,
   validateBody(createServiceSchema),
+  requireBusinessPermission("business:manage_listings"),
   asyncHandler(async (req: Request, res: Response) => {
-    const ctx = await ensureBusinessAccess(req, res);
-    if (!ctx) return;
+    const ctx = accessCtx(req);
     const created = await prisma.serviceListing.create({
       data: { businessId: ctx.business.id, ...req.body },
     });
@@ -1053,10 +1079,11 @@ router.patch(
   "/:id/services/:sid",
   requireAuth,
   validateParams(sidParamSchema),
+  requireBusinessExists,
   validateBody(updateServiceSchema),
+  requireBusinessPermission("business:manage_listings"),
   asyncHandler(async (req: Request, res: Response) => {
-    const ctx = await ensureBusinessAccess(req, res);
-    if (!ctx) return;
+    const ctx = accessCtx(req);
     const { sid } = req.params;
     const existing = await prisma.serviceListing.findUnique({
       where: { id: sid },
@@ -1076,9 +1103,10 @@ router.delete(
   "/:id/services/:sid",
   requireAuth,
   validateParams(sidParamSchema),
+  requireBusinessExists,
+  requireBusinessPermission("business:manage_listings"),
   asyncHandler(async (req: Request, res: Response) => {
-    const ctx = await ensureBusinessAccess(req, res);
-    if (!ctx) return;
+    const ctx = accessCtx(req);
     const { sid } = req.params;
     const existing = await prisma.serviceListing.findUnique({
       where: { id: sid },
@@ -1184,10 +1212,11 @@ router.post(
   "/:id/products",
   requireAuth,
   validateParams(idParamSchema),
+  requireBusinessExists,
   validateBody(createProductSchema),
+  requireBusinessPermission("business:manage_listings"),
   asyncHandler(async (req: Request, res: Response) => {
-    const ctx = await ensureBusinessAccess(req, res);
-    if (!ctx) return;
+    const ctx = accessCtx(req);
     const created = await prisma.brandProduct.create({
       data: { businessId: ctx.business.id, ...req.body },
     });
@@ -1199,10 +1228,11 @@ router.patch(
   "/:id/products/:pid",
   requireAuth,
   validateParams(pidParamSchema),
+  requireBusinessExists,
   validateBody(updateProductSchema),
+  requireBusinessPermission("business:manage_listings"),
   asyncHandler(async (req: Request, res: Response) => {
-    const ctx = await ensureBusinessAccess(req, res);
-    if (!ctx) return;
+    const ctx = accessCtx(req);
     const { pid } = req.params;
     const existing = await prisma.brandProduct.findUnique({
       where: { id: pid },
@@ -1222,9 +1252,10 @@ router.delete(
   "/:id/products/:pid",
   requireAuth,
   validateParams(pidParamSchema),
+  requireBusinessExists,
+  requireBusinessPermission("business:manage_listings"),
   asyncHandler(async (req: Request, res: Response) => {
-    const ctx = await ensureBusinessAccess(req, res);
-    if (!ctx) return;
+    const ctx = accessCtx(req);
     const { pid } = req.params;
     const existing = await prisma.brandProduct.findUnique({
       where: { id: pid },
@@ -1258,9 +1289,10 @@ router.get(
   "/:id/inquiries",
   requireAuth,
   validateParams(idParamSchema),
+  requireBusinessExists,
+  requireBusinessPermission("business:manage_deals"),
   asyncHandler(async (req: Request, res: Response) => {
-    const ctx = await ensureBusinessAccess(req, res);
-    if (!ctx) return;
+    const ctx = accessCtx(req);
     const inquiries = await prisma.businessInquiry.findMany({
       where: { businessId: ctx.business.id },
       include: {
@@ -1322,10 +1354,11 @@ router.patch(
   "/:id/inquiries/:iid",
   requireAuth,
   validateParams(iidParamSchema),
+  requireBusinessExists,
   validateBody(updateInquiryStatusSchema),
+  requireBusinessPermission("business:manage_deals"),
   asyncHandler(async (req: Request, res: Response) => {
-    const ctx = await ensureBusinessAccess(req, res);
-    if (!ctx) return;
+    const ctx = accessCtx(req);
     const { iid } = req.params;
     const existing = await prisma.businessInquiry.findUnique({
       where: { id: iid },
@@ -1343,6 +1376,158 @@ router.patch(
       },
     });
     ApiResponse.success(res, updated, "Inquiry updated");
+  }),
+);
+
+const businessRoleParamSchema = z.object({
+  id: z.string().min(1),
+  roleId: z.string().min(1),
+});
+
+const businessMemberRoleParamSchema = z.object({
+  id: z.string().min(1),
+  userId: z.string().min(1),
+});
+
+// ─── Custom roles & permissions (mirror club.routes.ts:1331-1357) ──────────
+// Writes require business:manage_roles; the two reads stay open to any
+// authenticated caller, exactly like the club mirror.
+
+router.get(
+  "/:id/roles",
+  requireAuth,
+  validateParams(idParamSchema),
+  asyncHandler(async (req: Request, res: Response) => {
+    const roles = await RolesService.listBusinessRoles(req.params.id);
+    ApiResponse.success(res, { roles });
+  }),
+);
+
+router.get(
+  "/:id/roles/permissions",
+  requireAuth,
+  validateParams(idParamSchema),
+  asyncHandler(async (_req: Request, res: Response) => {
+    const permissions = await RolesService.listBusinessPermissions();
+    ApiResponse.success(res, { permissions });
+  }),
+);
+
+router.post(
+  "/:id/roles",
+  requireAuth,
+  validateParams(idParamSchema),
+  requireBusinessExists,
+  requireBusinessPermission("business:manage_roles"),
+  asyncHandler(async (req: Request, res: Response) => {
+    const { id } = req.params;
+    const { name, description, color, icon, permissionCodes } = req.body;
+
+    if (!name || !permissionCodes || !Array.isArray(permissionCodes)) {
+      return ApiResponse.error(
+        res,
+        "Role name and permissionCodes array are required",
+        400,
+      );
+    }
+
+    const role = await RolesService.createBusinessRole(id, {
+      name,
+      description,
+      color,
+      icon,
+      permissionCodes,
+    });
+
+    ApiResponse.created(res, { role }, "Custom role created successfully");
+  }),
+);
+
+router.patch(
+  "/:id/roles/:roleId",
+  requireAuth,
+  validateParams(businessRoleParamSchema),
+  requireBusinessExists,
+  requireBusinessPermission("business:manage_roles"),
+  asyncHandler(async (req: Request, res: Response) => {
+    const { id, roleId } = req.params;
+    const { name, description, color, icon, permissionCodes } = req.body;
+
+    try {
+      const role = await RolesService.updateBusinessRole(id, roleId, {
+        name,
+        description,
+        color,
+        icon,
+        permissionCodes,
+      });
+      ApiResponse.success(res, { role }, "Role updated successfully");
+    } catch (error: any) {
+      if (error?.message?.includes("System roles")) {
+        return ApiResponse.error(
+          res,
+          error.message,
+          400,
+          ErrorCode.INVALID_INPUT,
+        );
+      }
+      return ApiResponse.notFound(res, error?.message ?? "Role not found");
+    }
+  }),
+);
+
+router.delete(
+  "/:id/roles/:roleId",
+  requireAuth,
+  validateParams(businessRoleParamSchema),
+  requireBusinessExists,
+  requireBusinessPermission("business:manage_roles"),
+  asyncHandler(async (req: Request, res: Response) => {
+    const { id, roleId } = req.params;
+
+    try {
+      await RolesService.deleteBusinessRole(id, roleId);
+      ApiResponse.success(res, null, "Role deleted successfully");
+    } catch (error: any) {
+      if (error?.message?.includes("System-defined")) {
+        return ApiResponse.error(
+          res,
+          error.message,
+          400,
+          ErrorCode.INVALID_INPUT,
+        );
+      }
+      return ApiResponse.notFound(res, error?.message ?? "Role not found");
+    }
+  }),
+);
+
+router.post(
+  "/:id/members/:userId/role",
+  requireAuth,
+  validateParams(businessMemberRoleParamSchema),
+  requireBusinessExists,
+  requireBusinessPermission("business:manage_roles"),
+  asyncHandler(async (req: Request, res: Response) => {
+    const { id, userId } = req.params;
+    const { roleId } = req.body;
+
+    // Match the legacy PATCH member-role endpoint: 404 when not a member.
+    const existing = await prisma.brandMember.findUnique({
+      where: { businessId_userId: { businessId: id, userId } },
+    });
+    if (!existing) return ApiResponse.notFound(res, "Member not found");
+
+    try {
+      const member = await RolesService.assignBusinessMemberRole(
+        id,
+        userId,
+        roleId ?? null,
+      );
+      ApiResponse.success(res, { member }, "Member role updated successfully");
+    } catch (error: any) {
+      return ApiResponse.notFound(res, error?.message ?? "Role not found");
+    }
   }),
 );
 

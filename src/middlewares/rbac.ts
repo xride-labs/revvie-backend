@@ -30,6 +30,11 @@ export async function getUserRoles(userId: string): Promise<UserRole[]> {
 
 /**
  * Require that the authenticated user holds **any** of the listed roles.
+ *
+ * @deprecated Slug/role-list path is a legacy shim. Prefer permission-code gates:
+ * `requirePermission(...)` for global permissions or `requireBusinessPermission(...)`
+ * (and `requireClubPermission(...)` for clubs) backed by `RolesService.hasPermission`.
+ * This function is frozen — no new call sites; runtime behavior unchanged.
  */
 export function requireRole(...allowedRoles: UserRole[]) {
   return async (req: Request, res: Response, next: NextFunction) => {
@@ -221,6 +226,39 @@ export function requireClubPermission(permissionCode: string, clubIdParam: strin
 
     (req as any).clubPermissions = permissions;
     (req as any).clubCustomRole = role;
+    next();
+  };
+}
+
+/**
+ * Require a specific business permission (e.g. 'business:view_analytics', 'business:manage_roles').
+ * Checks if user is business owner, holds a custom role with that permission, or is a system admin.
+ */
+export function requireBusinessPermission(permissionCode: string, businessIdParam: string = "id") {
+  return async (req: Request, res: Response, next: NextFunction) => {
+    const session = (req as any).session;
+    const businessId = req.params[businessIdParam] || req.params.businessId || req.body.businessId;
+
+    if (!session?.user) {
+      return ApiResponse.unauthorized(res, "Authentication required");
+    }
+
+    if (!businessId) {
+      return ApiResponse.error(res, "Business ID is required", 400, ErrorCode.MISSING_REQUIRED_FIELD);
+    }
+
+    const { permissions, role } = await RolesService.getBusinessPermissions(session.user.id, businessId);
+
+    if (!permissions.includes(permissionCode)) {
+      return ApiResponse.forbidden(
+        res,
+        `You do not have permission (${permissionCode}) to perform this action in this business`,
+        ErrorCode.INSUFFICIENT_PERMISSIONS,
+      );
+    }
+
+    (req as any).businessPermissions = permissions;
+    (req as any).businessCustomRole = role;
     next();
   };
 }

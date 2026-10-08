@@ -5,6 +5,11 @@
  */
 
 // Mirror the Prisma enum – kept in sync manually to avoid importing generated client everywhere.
+/**
+ * @deprecated Legacy static role shim. Use permission codes via
+ * `RolesService.hasPermission(userId, code)` with `requirePermission(...)` /
+ * `requireBusinessPermission(...)` middleware instead of role-enum checks.
+ */
 export enum UserRole {
   ADMIN = "ADMIN",
   CO_ADMIN = "CO_ADMIN",
@@ -52,7 +57,12 @@ export const MOBILE_ACCESS_ROLES: UserRole[] = [
 
 // ─── Helpers ─────────────────────────────────────────────────────────
 
-/** Check whether the user holds **any** of the required roles. */
+/**
+ * Check whether the user holds **any** of the required roles.
+ *
+ * @deprecated Legacy role-list check. Use `RolesService.hasPermission(userId, code)`
+ * with `requirePermission(...)` / `requireBusinessPermission(...)` instead.
+ */
 export function hasAnyRole(
   userRoles: UserRole[],
   requiredRoles: UserRole[],
@@ -82,6 +92,9 @@ export function isSuperAdmin(userRoles: UserRole[]): boolean {
  * Platform staff override. Accepts the loosely-typed `roles` string array that
  * `requireAuth` attaches to `req.session.user`. ADMIN and CO_ADMIN can manage
  * any resource regardless of ownership ("admins can change anything").
+ *
+ * @deprecated Legacy staff check. Use `RolesService.hasPermission(userId, code)`
+ * with `requirePermission(...)` / `requireBusinessPermission(...)` instead.
  */
 export function isStaff(roles: readonly string[] | null | undefined): boolean {
   if (!roles) return false;
@@ -108,6 +121,10 @@ export function normalizeRoles(roles: UserRole[]): UserRole[] {
 /**
  * Role permission matrix.
  * Maps each conceptual permission to the roles that grant it.
+ *
+ * @deprecated Legacy static permission matrix. Use permission codes via
+ * `RolesService.hasPermission(userId, code)` with `requirePermission(...)` /
+ * `requireBusinessPermission(...)` middleware instead.
  */
 export const PERMISSIONS = {
   // Admin

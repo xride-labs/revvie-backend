@@ -45,7 +45,7 @@ This API uses **Better Auth** for authentication with multiple providers:
     `,
     contact: {
       name: "Revvie Support",
-      email: "support@revvie.app",
+      email: "support@xride-labs.in",
     },
     license: {
       name: "MIT",
