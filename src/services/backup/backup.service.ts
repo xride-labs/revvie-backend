@@ -33,6 +33,38 @@ function createClient(connectionString: string): pg.Client {
 }
 
 /**
+ * The backup process truncates every application table on its target before
+ * copying rows. A Supabase URL is the production database in this deployment,
+ * so treating one as a routine backup target can erase production data when
+ * source and target environment variables are accidentally reversed.
+ *
+ * A one-off recovery may intentionally target Supabase. That requires the
+ * explicit, process-scoped BACKUP_ALLOW_PRODUCTION_TARGET=true override so it
+ * cannot happen through a normal scheduled job.
+ */
+function getUnsafeBackupTargetReason(targetUrl: string): string | null {
+  if (process.env.BACKUP_ALLOW_PRODUCTION_TARGET === "true") {
+    return null;
+  }
+
+  try {
+    const host = new URL(targetUrl).hostname.toLowerCase();
+    const isSupabase =
+      host === "supabase.com" ||
+      host.endsWith(".supabase.com") ||
+      host.endsWith(".supabase.co");
+
+    if (isSupabase) {
+      return "Refusing to use Supabase as a truncating backup target. Set BACKUP_ALLOW_PRODUCTION_TARGET=true only for an intentional, supervised restore.";
+    }
+  } catch {
+    return "Backup target URL is invalid.";
+  }
+
+  return null;
+}
+
+/**
  * Computes topological sorting of tables based on foreign key relationships
  * so parent tables are inserted before dependent child tables.
  */
@@ -129,6 +161,16 @@ export async function runDatabaseBackup(options?: BackupOptions): Promise<Backup
     return {
       status: "FAILED",
       error: "Source database URL missing",
+      durationMs: Date.now() - startTime,
+    };
+  }
+
+  const unsafeTargetReason = getUnsafeBackupTargetReason(targetUrl);
+  if (unsafeTargetReason) {
+    console.error(`[DB Backup] ${unsafeTargetReason}`);
+    return {
+      status: "FAILED",
+      error: unsafeTargetReason,
       durationMs: Date.now() - startTime,
     };
   }

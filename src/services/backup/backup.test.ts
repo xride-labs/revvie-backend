@@ -87,5 +87,20 @@ describe("Database Backup Service", () => {
       expect(result.status).toBe("FAILED");
       expect(result.error).toContain("Source database URL missing");
     });
+
+    it("refuses to use Supabase as a truncating backup target without an explicit override", async () => {
+      const previous = process.env.BACKUP_ALLOW_PRODUCTION_TARGET;
+      delete process.env.BACKUP_ALLOW_PRODUCTION_TARGET;
+
+      const result = await runDatabaseBackup({
+        sourceUrl: "postgresql://user:pass@ep-backup.neon.tech:5432/neondb",
+        targetUrl: "postgresql://user:pass@aws-1-ap-southeast-2.pooler.supabase.com:5432/postgres",
+      });
+
+      expect(result.status).toBe("FAILED");
+      expect(result.error).toContain("Supabase");
+
+      if (previous) process.env.BACKUP_ALLOW_PRODUCTION_TARGET = previous;
+    });
   });
 });
