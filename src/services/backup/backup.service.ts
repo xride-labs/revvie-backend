@@ -180,6 +180,7 @@ export async function runDatabaseBackup(options?: BackupOptions): Promise<Backup
 
   const sourceClient = createClient(sourceUrl);
   const targetClient = createClient(targetUrl);
+  let targetTransactionStarted = false;
 
   try {
     await Promise.all([sourceClient.connect(), targetClient.connect()]);
@@ -248,7 +249,13 @@ export async function runDatabaseBackup(options?: BackupOptions): Promise<Backup
     const sortedTables = await getTopologicallySortedTables(sourceClient);
     console.log(`[DB Backup] Found ${sortedTables.length} tables to synchronize in dependency order.`);
 
-    // 6. Truncate all tables on target in a single multi-table CASCADE query
+    // 6. Keep the complete target mutation atomic. If a source row cannot be
+    // copied, the target retains its last complete backup instead of being
+    // left empty or partially restored after the truncate.
+    await targetClient.query("BEGIN");
+    targetTransactionStarted = true;
+
+    // 7. Truncate all tables on target in a single multi-table CASCADE query
     if (sortedTables.length > 0) {
       console.log(`[DB Backup] Truncating target tables...`);
       const truncateList = sortedTables.map((t) => `"${t}"`).join(", ");
@@ -258,7 +265,7 @@ export async function runDatabaseBackup(options?: BackupOptions): Promise<Backup
     let tablesSynced = 0;
     let rowsSynced = 0;
 
-    // 7. Copy table data in topological order (parents first)
+    // 8. Copy table data in topological order (parents first)
     for (const table of sortedTables) {
       // Query columns on source
       const srcColsRes = await sourceClient.query(
@@ -327,7 +334,7 @@ export async function runDatabaseBackup(options?: BackupOptions): Promise<Backup
       rowsSynced += rows.length;
     }
 
-    // 8. Resynchronize serial sequences on target
+    // 9. Resynchronize serial sequences on target
     console.log(`[DB Backup] Resynchronizing sequences on target...`);
     const seqRes = await targetClient.query(`
       SELECT table_name, column_name
@@ -352,7 +359,7 @@ export async function runDatabaseBackup(options?: BackupOptions): Promise<Backup
     const durationMs = Date.now() - startTime;
     const backupId = `bk_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
 
-    // 9. Record success in _backup_history
+    // 10. Record success in _backup_history
     await targetClient.query(
       `INSERT INTO _backup_history (
         id, source_fingerprint, status, tables_synced, rows_synced,
@@ -369,6 +376,9 @@ export async function runDatabaseBackup(options?: BackupOptions): Promise<Backup
       ]
     );
 
+    await targetClient.query("COMMIT");
+    targetTransactionStarted = false;
+
     console.log(
       `[DB Backup] Backup completed successfully in ${durationMs}ms. Tables synced: ${tablesSynced}, Rows synced: ${rowsSynced}.`
     );
@@ -384,6 +394,15 @@ export async function runDatabaseBackup(options?: BackupOptions): Promise<Backup
       migrationsApplied: schemaResult.appliedMigrations.length,
     };
   } catch (error) {
+    if (targetTransactionStarted) {
+      try {
+        await targetClient.query("ROLLBACK");
+      } catch {
+        // Preserve the original copy failure if the connection is unavailable.
+      }
+      targetTransactionStarted = false;
+    }
+
     const durationMs = Date.now() - startTime;
     const errMsg = (error as Error).message;
     console.error(`[DB Backup] Backup failed after ${durationMs}ms:`, errMsg);
