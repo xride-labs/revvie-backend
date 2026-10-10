@@ -38,6 +38,7 @@ import {
   weatherRoutes,
   analyticsRoutes,
   tenantRoutes,
+  curatedRoutes,
 } from "./routes/index.js";
 import { metricsMiddleware, metricsHandler } from "./lib/metrics.js";
 import {
@@ -298,6 +299,9 @@ app.use("/api/saved", savedRoutes);
 app.use("/api/weather", weatherRoutes);
 app.use("/api/analytics", analyticsRoutes);
 app.use("/api/tenant", tenantRoutes);
+app.use("/api/curated-itineraries", curatedRoutes);
+app.use("/api/curated-places", curatedRoutes);
+
 
 // Base URL welcome page
 app.get("/", (req: Request, res: Response) => {

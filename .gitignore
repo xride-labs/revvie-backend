@@ -36,3 +36,5 @@ coverage/
 
 # Misc
 *.tsbuildinfo
+.superpowers/
+scratch/
