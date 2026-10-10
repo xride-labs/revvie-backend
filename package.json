@@ -23,6 +23,8 @@
     "db:pull": "bunx prisma db pull",
     "db:seed": "tsx prisma/seed.ts",
     "seed:bikes": "tsx src/scripts/seed-bikes.ts",
+    "seed:india-public-clubs": "tsx src/scripts/seed-india-public-clubs.ts",
+    "verify:india-public-clubs": "tsx src/scripts/verify-india-public-clubs.ts",
     "db:reset": "bunx prisma migrate reset --force && bun run db:seed",
     "db:seed:prod": "NODE_ENV=production node dist/prisma/seed.js",
     "db:backup": "tsx src/scripts/run-backup.ts",
