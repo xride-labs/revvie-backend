@@ -943,11 +943,16 @@ model Ride {
   // Saved routes referencing this ride
   savedByUsers SavedRoute[]
 
+  // Provenance link to curated template if scheduled from one
+  curatedItineraryId String?           @map("curated_itinerary_id")
+  curatedItinerary   CuratedItinerary? @relation(fields: [curatedItineraryId], references: [id], onDelete: SetNull)
+
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
   // Indexes for geo-queries and feed performance
   @@index([latitude, longitude], map: "rides_geo_idx")
+  @@index([curatedItineraryId], map: "rides_curated_itinerary_idx")
   @@index([status, scheduledAt], map: "rides_status_scheduled_idx")
   @@index([createdAt], map: "rides_created_idx")
   // getMyRides (ride.controller.ts) filters creatorId [+ status], orders by
@@ -2273,12 +2278,33 @@ model Place {
   longitude   Float
   placeId     String?  @unique @map("place_id") // Optional external ID (e.g., Google Place ID)
   icon        String?
+
+  // Curated metadata & ratings
+  rating          Float    @default(4.5)
+  ratingCount     Int      @default(1) @map("rating_count")
+  difficulty      String?  // 'Easy', 'Moderate', 'Challenging', 'Extreme'
+  corridor        String?  // 'MYSORE_ROAD', 'KANAKAPURA_ROAD', 'TUMKUR_ROAD', 'HASSAN_ROAD', 'AIRPORT_ROAD', 'HOSUR_ROAD', 'OLD_MADRAS_ROAD'
+  region          String   @default("KARNATAKA")
+  category        String?  // 'FORT', 'TREK', 'WATERBODY', 'DAM', 'HERITAGE', 'VIEWPOINT', 'FOOD_STOP', 'MOTO_EVENT'
+  elevation       String?  // e.g. "1,224 m"
+  bestSeason      String?  @map("best_season")
+  roadConditions  String?  @map("road_conditions")
+  distanceFromBlr Int?     @map("distance_from_blr")
+  tags            String[] @default([])
+  imageUrl        String?  @map("image_url")
+  description     String?  @db.Text
+  isCurated       Boolean  @default(true) @map("is_curated")
+
   createdAt   DateTime @default(now()) @map("created_at")
   updatedAt   DateTime @updatedAt @map("updated_at")
 
-  savedLocations SavedLocation[]
+  savedLocations     SavedLocation[]
+  itineraryWaypoints CuratedItineraryWaypoint[]
 
   @@index([latitude, longitude], map: "places_lat_lng_idx")
+  @@index([corridor], map: "places_corridor_idx")
+  @@index([rating], map: "places_rating_idx")
+  @@index([category], map: "places_category_idx")
   @@map("places")
 }
 
@@ -2381,3 +2407,88 @@ model SavedRoute {
   @@index([userId], map: "saved_routes_user_idx")
   @@map("saved_routes")
 }
+
+// ─────────────────────────────────────────────────────────────
+// Curated Motorcycle Itineraries & Thematic Collections
+// ─────────────────────────────────────────────────────────────
+
+enum ItineraryTheme {
+  NAVADURGAS       // The 9 legendary hill forts around Bangalore
+  SEEMADURGAS      // The 9 frontier sentinels
+  WATERBODIES      // Lakes, reservoirs, dams, and waterfalls
+  TREKS            // 30 Essential Treks & summits
+  HISTORICAL       // Heritage, ancient forts, stone temples
+  COASTAL_DRIVES   // Western Ghats, Coastal Karnataka, Konkan
+  MOTO_EVENTS      // Motoverse (Goa), IBW, track events
+  CHALLENGE_DOCKET // Endurance and multi-peak loops
+}
+
+enum DurationTier {
+  HALF_DAY            // <100 km morning detox
+  FULL_DAY            // 100 - 300 km day trip
+  WEEKEND             // 300 - 600 km (2-3 days)
+  EXPEDITION_WEEK     // 5-7 days
+  EXPEDITION_15_DAYS  // 15 days grand expedition
+  CUSTOM_DAYS         // Custom multi-day duration
+}
+
+model CuratedItinerary {
+  id                 String          @id @default(cuid())
+  title              String
+  subtitle           String?
+  description        String?         @db.Text
+  slug               String          @unique
+  theme              ItineraryTheme
+  durationTier       DurationTier    @map("duration_tier")
+  corridor           String?         // Primary departure corridor: MYSORE_ROAD, KANAKAPURA_ROAD, etc.
+  region             String          @default("KARNATAKA")
+  distanceKm         Float           @map("distance_km")
+  durationMinutes    Int             @map("duration_minutes")
+  difficulty         String?         // 'Beginner', 'Intermediate', 'Advanced', 'Hardcore'
+  rating             Float           @default(4.8)
+  ratingCount        Int             @default(1) @map("rating_count")
+  
+  startLocationName  String          @map("start_location_name")
+  startLat           Float           @map("start_lat")
+  startLng           Float           @map("start_lng")
+  endLocationName    String?         @map("end_location_name")
+  endLat             Float?          @map("end_lat")
+  endLng             Float?          @map("end_lng")
+  
+  routePolyline      String?         @db.Text @map("route_polyline")
+  heroImage          String?         @map("hero_image")
+  galleryImages      String[]        @default([]) @map("gallery_images")
+  highlights         String[]        @default([])
+  isPublished        Boolean         @default(true) @map("is_published")
+
+  createdAt          DateTime        @default(now()) @map("created_at")
+  updatedAt          DateTime        @updatedAt @map("updated_at")
+
+  waypoints          CuratedItineraryWaypoint[]
+  scheduledRides     Ride[]
+
+  @@index([theme], map: "curated_itineraries_theme_idx")
+  @@index([durationTier], map: "curated_itineraries_duration_idx")
+  @@index([corridor], map: "curated_itineraries_corridor_idx")
+  @@index([rating], map: "curated_itineraries_rating_idx")
+  @@map("curated_itineraries")
+}
+
+model CuratedItineraryWaypoint {
+  id          String   @id @default(cuid())
+  itineraryId String   @map("itinerary_id")
+  placeId     String?  @map("place_id")
+  order       Int
+  name        String
+  latitude    Float
+  longitude   Float
+  stopType    String   @default("STOP") @map("stop_type") // START, VIEWPOINT, BASE, FOOD, FUEL, END
+  notes       String?
+
+  itinerary   CuratedItinerary @relation(fields: [itineraryId], references: [id], onDelete: Cascade)
+  place       Place?            @relation(fields: [placeId], references: [id], onDelete: SetNull)
+
+  @@index([itineraryId, order], map: "itinerary_waypoints_order_idx")
+  @@map("curated_itinerary_waypoints")
+}
+
