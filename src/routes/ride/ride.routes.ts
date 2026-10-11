@@ -3,6 +3,7 @@ import rateLimit, { ipKeyGenerator } from "express-rate-limit";
 import { z } from "zod";
 import { requireAuth } from "../../config/auth.js";
 import { RideController } from "../../controllers/ride.controller.js";
+import { getRideInsights } from "../../services/ride/insights.service.js";
 import { requirePro } from "../../lib/subscription.js";
 import {
     requireOwnershipOrAdmin
@@ -120,6 +121,15 @@ router.use(requireAuth);
  * `status=all` to get everything (used by the full-list screen).
  */
 router.get("/mine", asyncHandler(RideController.getMyRides));
+
+router.get(
+  "/insights",
+  asyncHandler(async (req, res) => {
+    const session = (req as any).session;
+    const report = await getRideInsights(session.user.id);
+    res.status(200).json({ success: true, data: report });
+  }),
+);
 
 router.get(
   "/",

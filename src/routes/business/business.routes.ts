@@ -18,6 +18,10 @@ import { RolesService } from "../../services/roles.service.js";
 import { isStaff } from "../../lib/utils/permissions.js";
 import adsRoutes from "../ads/ads.routes.js";
 import discountRoutes from "../discount/discount.routes.js";
+import {
+  getNearbyRiderServices,
+  RIDER_SERVICE_CATEGORIES,
+} from "../../services/rider-services/riderServices.service.js";
 
 const router = Router();
 
@@ -98,6 +102,14 @@ const listQuerySchema = z.object({
   search: z.string().max(100).optional(),
   page: z.coerce.number().int().min(1).default(1),
   limit: z.coerce.number().int().min(1).max(50).default(20),
+});
+
+const nearbyRiderServicesQuerySchema = z.object({
+  latitude: z.coerce.number().min(-90).max(90),
+  longitude: z.coerce.number().min(-180).max(180),
+  category: z.enum(RIDER_SERVICE_CATEGORIES).optional(),
+  radiusKm: z.coerce.number().min(1).max(100).default(15),
+  limit: z.coerce.number().int().min(1).max(50).default(40),
 });
 
 const reviewActionSchema = z.object({
@@ -221,6 +233,18 @@ router.get(
       orderBy: { createdAt: "desc" },
     });
     ApiResponse.success(res, items);
+  }),
+);
+
+router.get(
+  "/nearby",
+  requireAuth,
+  validateQuery(nearbyRiderServicesQuerySchema),
+  asyncHandler(async (req: Request, res: Response) => {
+    const services = await getNearbyRiderServices(
+      req.query as unknown as Parameters<typeof getNearbyRiderServices>[0],
+    );
+    ApiResponse.success(res, { services });
   }),
 );
 
