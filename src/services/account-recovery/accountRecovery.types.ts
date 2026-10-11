@@ -16,9 +16,19 @@ export interface CreateRecoveryChallengeInput {
   channel: RecoveryChannel;
   value: string;
   purpose: RecoveryChallengePurpose;
+  /** Binds a FACTOR_LINK challenge to the signed-in rider requesting it. */
+  userId?: string;
 }
 
 export interface VerifyRecoveryChallengeInput {
+  challengeToken: string;
+  code: string;
+}
+
+export interface LinkFactorInput {
+  userId: string;
+  channel: RecoveryChannel;
+  value: string;
   challengeToken: string;
   code: string;
 }

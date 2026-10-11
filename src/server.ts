@@ -14,6 +14,7 @@ import { connectMongoDB } from "./lib/mongodb.js";
 import { setupSwagger } from "./config/swagger.js";
 import {
   accountRoutes,
+  publicRecoveryRouter,
   phoneAuthRouter,
   userRoutes,
   rideRoutes,
@@ -156,6 +157,7 @@ app.use("/api/auth", signupGateMiddleware);
 // Public Phone Auth endpoints (SMS OTP via APITxT)
 // Mounted BEFORE Better Auth handler with express.json body parser
 app.use("/api/auth/phone", express.json(), phoneAuthRouter);
+app.use("/api/auth/recovery", express.json(), publicRecoveryRouter);
 app.use("/api/auth/send-otp", express.json(), (req: Request, res: Response, next: NextFunction) => {
   req.url = "/send-otp";
   phoneAuthRouter(req, res, next);

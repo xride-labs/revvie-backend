@@ -5,6 +5,7 @@ import type {
   AccountRecoveryServiceOptions,
   CreateRecoveryChallengeInput,
   CreateRecoveryRequestInput,
+  LinkFactorInput,
   RecoveryChannel,
   RecoveryFactor,
   VerifyRecoveryChallengeInput,
@@ -14,6 +15,7 @@ export const RECOVERY_CHALLENGE_TTL_MS = 10 * 60 * 1000;
 export const RECOVERY_REQUEST_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 export const RECOVERY_HOLD_MS = 7 * 24 * 60 * 60 * 1000;
 const MAX_CHALLENGE_ATTEMPTS = 5;
+const MAX_CHALLENGES_PER_DESTINATION_PER_HOUR = 5;
 
 type Database = PrismaClient | Prisma.TransactionClient;
 
@@ -26,7 +28,8 @@ export class AccountRecoveryError extends Error {
       | "REQUEST_NOT_FOUND"
       | "REQUEST_NOT_CANCELLABLE"
       | "REQUEST_NOT_REVIEWABLE"
-      | "DESTINATION_ALREADY_LINKED",
+      | "DESTINATION_ALREADY_LINKED"
+      | "RATE_LIMITED",
     message: string,
   ) {
     super(message);
@@ -90,9 +93,32 @@ export class AccountRecoveryService {
     };
   }
 
+  private destinationHashFor(
+    purpose: string,
+    userId: string | undefined,
+    value: string,
+  ): string {
+    // FACTOR_LINK proofs are bound to the rider who requested them, so a
+    // code sent to a shared device cannot be replayed by another account.
+    return this.hash(
+      "destination",
+      purpose === "FACTOR_LINK" && userId ? `${userId}:${value}` : value,
+    );
+  }
+
   async createChallenge(input: CreateRecoveryChallengeInput) {
     const now = this.getNow();
     const value = this.normalize(input.channel, input.value);
+    const destinationHash = this.destinationHashFor(input.purpose, input.userId, value);
+    const recentChallenges = await this.db.accountRecoveryChallenge.count({
+      where: {
+        destinationHash,
+        createdAt: { gt: new Date(now.getTime() - 60 * 60 * 1000) },
+      },
+    });
+    if (recentChallenges >= MAX_CHALLENGES_PER_DESTINATION_PER_HOUR) {
+      throw new AccountRecoveryError("RATE_LIMITED", "Too many verification codes were requested. Try again later.");
+    }
     const challengeToken = crypto.randomBytes(32).toString("base64url");
     const code = this.getCode();
     const expiresAt = new Date(now.getTime() + RECOVERY_CHALLENGE_TTL_MS);
@@ -100,7 +126,7 @@ export class AccountRecoveryService {
     await this.db.accountRecoveryChallenge.create({
       data: {
         tokenHash: this.hash("challenge-token", challengeToken),
-        destinationHash: this.hash("destination", value),
+        destinationHash,
         channel: input.channel,
         purpose: input.purpose,
         codeHash: this.hash("challenge-code", `${challengeToken}:${code}`),
@@ -138,6 +164,61 @@ export class AccountRecoveryService {
       data: { verifiedAt: this.getNow() },
     });
     return { challengeToken: input.challengeToken };
+  }
+
+  /**
+   * Attach a newly verified email or phone to an authenticated rider. The
+   * destination is never moved: if another rider already owns it, the link is
+   * rejected and audited so the rider can use assisted recovery instead.
+   */
+  async linkFactor(input: LinkFactorInput) {
+    const now = this.getNow();
+    const value = this.normalize(input.channel, input.value);
+    await this.verifyChallenge({ challengeToken: input.challengeToken, code: input.code });
+
+    const tokenHash = this.hash("challenge-token", input.challengeToken);
+    const challenge = await this.db.accountRecoveryChallenge.findUnique({ where: { tokenHash } });
+    if (
+      !challenge ||
+      challenge.purpose !== "FACTOR_LINK" ||
+      challenge.channel !== input.channel ||
+      !constantTimeEqual(challenge.destinationHash, this.destinationHashFor("FACTOR_LINK", input.userId, value))
+    ) {
+      throw new AccountRecoveryError("CHALLENGE_INVALID", "The verification code is invalid.");
+    }
+
+    const claimed = await this.db.accountRecoveryChallenge.updateMany({
+      where: { id: challenge.id, consumedAt: null },
+      data: { consumedAt: now },
+    });
+    if (!claimed.count) {
+      throw new AccountRecoveryError("CHALLENGE_CONSUMED", "Request a new verification code.");
+    }
+
+    const owner = input.channel === "EMAIL"
+      ? await this.db.user.findUnique({ where: { email: value }, select: { id: true } })
+      : await this.db.user.findUnique({ where: { phone: value }, select: { id: true } });
+    if (owner && owner.id !== input.userId) {
+      await this.db.accountSecurityEvent.create({
+        data: { userId: input.userId, type: "FACTOR_LINK_REJECTED", metadata: { channel: input.channel } },
+      });
+      throw new AccountRecoveryError("DESTINATION_ALREADY_LINKED", "This destination belongs to another account.");
+    }
+
+    const data = input.channel === "EMAIL"
+      ? { email: value, emailVerified: true }
+      : { phone: value, phoneVerified: true };
+    const [user] = await this.db.$transaction([
+      this.db.user.update({
+        where: { id: input.userId },
+        data,
+        select: { id: true, email: true, phone: true, emailVerified: true, phoneVerified: true },
+      }),
+      this.db.accountSecurityEvent.create({
+        data: { userId: input.userId, type: "FACTOR_LINKED", metadata: { channel: input.channel } },
+      }),
+    ]);
+    return user;
   }
 
   async createRequest(input: CreateRecoveryRequestInput) {

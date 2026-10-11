@@ -1,4 +1,5 @@
 export { default as accountRoutes, phoneAuthRouter } from "./auth/auth.routes.js";
+export { publicRecoveryRouter, accountRecoveryRouter } from "./auth/recovery.routes.js";
 export { default as userRoutes } from "./user/user.routes.js";
 export { default as rideRoutes } from "./ride/ride.routes.js";
 export { default as clubRoutes } from "./club/club.routes.js";

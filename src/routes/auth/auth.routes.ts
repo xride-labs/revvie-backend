@@ -15,6 +15,7 @@ import {
   verifyOtpSchema,
 } from "../../validators/schemas.js";
 import { z } from "zod";
+import { accountRecoveryRouter } from "./recovery.routes.js";
 import { recordSecurityEvent } from "../../lib/securityEvents.js";
 import crypto from "crypto";
 import { invalidatePushPrefCache } from "../../lib/notifications.js";
@@ -24,6 +25,7 @@ import {
 } from "../../lib/phoneVerification.js";
 
 const router = Router();
+router.use(accountRecoveryRouter);
 
 // Password authentication has been retired; answer every legacy caller
 // (authenticated or not) with a deterministic, documented response.
