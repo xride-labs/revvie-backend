@@ -14,6 +14,41 @@ BEGIN
   END IF;
 END $$;
 
+-- CreateTable places
+CREATE TABLE IF NOT EXISTS "places" (
+    "id" TEXT NOT NULL,
+    "name" TEXT NOT NULL,
+    "address" TEXT NOT NULL DEFAULT '',
+    "latitude" DOUBLE PRECISION NOT NULL DEFAULT 0,
+    "longitude" DOUBLE PRECISION NOT NULL DEFAULT 0,
+    "place_id" TEXT,
+    "icon" TEXT,
+    "rating" DOUBLE PRECISION NOT NULL DEFAULT 4.5,
+    "rating_count" INTEGER NOT NULL DEFAULT 1,
+    "difficulty" TEXT,
+    "corridor" TEXT,
+    "region" TEXT NOT NULL DEFAULT 'KARNATAKA',
+    "category" TEXT,
+    "elevation" TEXT,
+    "best_season" TEXT,
+    "road_conditions" TEXT,
+    "distance_from_blr" INTEGER,
+    "tags" TEXT[] NOT NULL DEFAULT ARRAY[]::TEXT[],
+    "image_url" TEXT,
+    "description" TEXT,
+    "is_curated" BOOLEAN NOT NULL DEFAULT true,
+    "created_at" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updated_at" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    CONSTRAINT "places_pkey" PRIMARY KEY ("id")
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS "places_place_id_key" ON "places"("place_id");
+CREATE INDEX IF NOT EXISTS "places_lat_lng_idx" ON "places"("latitude", "longitude");
+CREATE INDEX IF NOT EXISTS "places_corridor_idx" ON "places"("corridor");
+CREATE INDEX IF NOT EXISTS "places_rating_idx" ON "places"("rating");
+CREATE INDEX IF NOT EXISTS "places_category_idx" ON "places"("category");
+
 -- AlterTable places
 ALTER TABLE "places"
   ADD COLUMN IF NOT EXISTS "rating" DOUBLE PRECISION NOT NULL DEFAULT 4.5,
@@ -30,10 +65,6 @@ ALTER TABLE "places"
   ADD COLUMN IF NOT EXISTS "image_url" TEXT,
   ADD COLUMN IF NOT EXISTS "description" TEXT,
   ADD COLUMN IF NOT EXISTS "is_curated" BOOLEAN NOT NULL DEFAULT true;
-
-CREATE INDEX IF NOT EXISTS "places_corridor_idx" ON "places"("corridor");
-CREATE INDEX IF NOT EXISTS "places_rating_idx" ON "places"("rating");
-CREATE INDEX IF NOT EXISTS "places_category_idx" ON "places"("category");
 
 -- CreateTable curated_itineraries
 CREATE TABLE IF NOT EXISTS "curated_itineraries" (
