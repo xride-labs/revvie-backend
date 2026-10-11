@@ -3,6 +3,7 @@ import request from "supertest";
 import { app } from "../../server";
 import prisma from "../../lib/prisma.js";
 import { createTestUser, cleanupTestData } from "../../test/utils";
+import { validateAuthEnvironment } from "../../config/authEnvironment.js";
 
 const delivered = vi.hoisted(() => ({ codes: new Map<string, string>() }));
 
@@ -177,5 +178,37 @@ describe("Account recovery and factor routes", () => {
   it("requires authentication to cancel a recovery request", async () => {
     const response = await request(app).post("/api/account/recovery/requests/anything/cancel");
     expect(response.status).toBe(401);
+  });
+});
+
+describe("Auth environment validation", () => {
+  it("requires passkey RP settings outside development", () => {
+    expect(validateAuthEnvironment({ NODE_ENV: "production" })).toEqual(
+      expect.arrayContaining(["PASSKEY_RP_ID", "PASSKEY_ORIGINS"]),
+    );
+  });
+
+  it("accepts a fully configured production environment", () => {
+    expect(
+      validateAuthEnvironment({
+        NODE_ENV: "production",
+        BETTER_AUTH_SECRET: "x".repeat(32),
+        PASSKEY_RP_ID: "revvie.xride-labs.in",
+        PASSKEY_ORIGINS: "https://revvie.xride-labs.in",
+      }),
+    ).toEqual([]);
+  });
+
+  it("flags a half-configured Apple provider and ignores development", () => {
+    expect(
+      validateAuthEnvironment({
+        NODE_ENV: "production",
+        BETTER_AUTH_SECRET: "s",
+        PASSKEY_RP_ID: "a",
+        PASSKEY_ORIGINS: "b",
+        AUTH_APPLE_ID: "id",
+      }),
+    ).toEqual(["AUTH_APPLE_SECRET"]);
+    expect(validateAuthEnvironment({ NODE_ENV: "development" })).toEqual([]);
   });
 });

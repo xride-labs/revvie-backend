@@ -8,6 +8,7 @@ import path from "path";
 import { fileURLToPath } from "url";
 
 import { auth } from "./config/auth.js";
+import { validateAuthEnvironment } from "./config/authEnvironment.js";
 import { CORS_OPTIONS } from "./config/trustedOrigins.js";
 import { toNodeHandler } from "better-auth/node";
 import { connectMongoDB } from "./lib/mongodb.js";
@@ -365,6 +366,13 @@ export async function startServer() {
       console.log("[SERVER] Running database migrations...");
       execSync("bunx prisma migrate deploy", { stdio: "inherit" });
       console.log("[SERVER] Migrations complete");
+    }
+
+    const missingAuthEnv = validateAuthEnvironment();
+    if (missingAuthEnv.length) {
+      console.error(
+        `[SERVER] Authentication is misconfigured; set: ${missingAuthEnv.join(", ")}`,
+      );
     }
 
     // Connect to PostgreSQL (required for auth and core APIs)
