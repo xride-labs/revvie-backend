@@ -3,6 +3,8 @@ import prisma from "../lib/prisma.js";
 import { deleteMultipleMedia } from "../lib/cloudinary.js";
 import { notifyUsers } from "../lib/notifications.js";
 import { runDatabaseBackup } from "../services/backup/backup.service.js";
+import { accountRecoveryService } from "../routes/auth/recovery.routes.js";
+import { notifyRecoveryMilestone } from "../services/account-recovery/accountRecovery.notifications.js";
 
 /**
  * Configuration for ride cleanup
@@ -456,6 +458,38 @@ export async function sendUpcomingRideReminders(): Promise<{
 }
 
 /**
+ * Release approved account-recovery cases whose seven-day hold has elapsed.
+ * Safe to run repeatedly: each case is claimed with a state-guarded update, so
+ * cancelled, expired, and already-completed cases are never processed again.
+ */
+export async function processDueAccountRecoveries(
+  now: Date = new Date(),
+): Promise<{ completed: number; failed: number }> {
+  // Capture the pre-recovery email now; after release it may be replaced.
+  const due = await prisma.accountRecoveryRequest.findMany({
+    where: { status: "APPROVED", releaseAt: { lte: now }, userId: { not: null } },
+    select: { id: true, userId: true, user: { select: { email: true } } },
+    take: 100,
+  });
+
+  const result = await accountRecoveryService.completeDueRequests(now);
+
+  if (result.completed > 0) {
+    const finished = await prisma.accountRecoveryRequest.findMany({
+      where: { id: { in: due.map((d) => d.id) }, status: "COMPLETED" },
+      select: { id: true },
+    });
+    const finishedIds = new Set(finished.map((f) => f.id));
+    for (const entry of due) {
+      if (entry.userId && finishedIds.has(entry.id)) {
+        await notifyRecoveryMilestone(entry.userId, "COMPLETED", null, entry.user?.email);
+      }
+    }
+  }
+  return { completed: result.completed, failed: result.retried };
+}
+
+/**
  * Initialize all scheduled jobs
  */
 export function initializeScheduledJobs(): void {
@@ -465,6 +499,19 @@ export function initializeScheduledJobs(): void {
   cron.schedule("0 2 * * *", async () => {
     console.log("[Jobs] Running daily ride cleanup...");
     await cleanupOldRides();
+  });
+
+  // Release due account-recovery cases every 15 minutes. One bad case is
+  // contained inside the service, so later cases are still processed.
+  cron.schedule("*/15 * * * *", async () => {
+    try {
+      const result = await processDueAccountRecoveries();
+      if (result.completed || result.failed) {
+        console.log("[Jobs] Account recovery release:", result);
+      }
+    } catch (error) {
+      console.error("[Jobs] Account recovery release failed:", error);
+    }
   });
 
   // Update ride statuses every 15 minutes
@@ -641,6 +688,8 @@ export async function runJobManually(jobName: string): Promise<any> {
       return await cleanupOldRides();
     case "updateRideStatuses":
       return await updateRideStatuses();
+    case "processDueAccountRecoveries":
+      return await processDueAccountRecoveries();
     case "cleanupExpiredSessions":
       return await cleanupExpiredSessions();
     case "updateUserStatistics":

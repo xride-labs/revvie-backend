@@ -35,6 +35,7 @@ import {
 import adminCommerceRouter from "./admin.commerce.routes.js";
 import adminRolesRouter from "./roles.routes.js";
 import adminBrandingRouter from "./admin.branding.routes.js";
+import adminRecoveryRouter from "./admin.recovery.routes.js";
 
 const router = Router();
 
@@ -44,6 +45,7 @@ const router = Router();
 router.use("/", adminCommerceRouter);
 router.use("/", adminRolesRouter);
 router.use("/", adminBrandingRouter);
+router.use("/", adminRecoveryRouter);
 
 const PRIVILEGED_ADMIN_ROLES: string[] = [
   "SUPER_ADMIN",
