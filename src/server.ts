@@ -16,6 +16,7 @@ import { setupSwagger } from "./config/swagger.js";
 import {
   accountRoutes,
   publicRecoveryRouter,
+  accountRecoveryRouter,
   phoneAuthRouter,
   userRoutes,
   rideRoutes,
@@ -277,6 +278,7 @@ app.get("/health", healthHandler);
 app.get("/metrics", metricsHandler);
 
 // Account routes (profile, verify-email, change-password)
+app.use("/api/account", accountRecoveryRouter);
 app.use("/api/account", accountRoutes);
 app.use("/api/users", userRoutes);
 app.use("/api/rides", rideRoutes);
