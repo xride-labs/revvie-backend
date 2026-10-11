@@ -3,14 +3,14 @@ export function phoneNumber() {
 }
 
 export function bearer() {
-  return {};
+  return { id: "bearer" };
 }
 
 // config/auth.ts imports and calls emailOTP({...}) and magicLink({...}) at
 // module load. Without these exports they resolve to undefined and throw
 // "<plugin> is not a function", taking down every suite that imports the app.
 export function emailOTP() {
-  return {};
+  return { id: "email-otp" };
 }
 
 export function magicLink() {

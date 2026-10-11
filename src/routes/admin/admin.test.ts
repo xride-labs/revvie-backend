@@ -52,8 +52,14 @@ const SHORT_ID = "abc";
  */
 async function createUserWithRole(role: string) {
   const helper = await createTestUser();
+  const slug = role.toLowerCase();
+  const roleRecord =
+    (await prisma.role.findFirst({ where: { slug, scope: "GLOBAL" } })) ??
+    (await prisma.role.create({
+      data: { name: role, slug, scope: "GLOBAL", isSystem: true },
+    }));
   await prisma.userRoleAssignment.create({
-    data: { userId: helper.user.id, role: role as any },
+    data: { userId: helper.user.id, roleId: roleRecord.id },
   });
   return helper;
 }
@@ -521,7 +527,6 @@ describe("Admin Routes", () => {
         .set("Authorization", `Bearer ${admin.token}`)
         .send({
           email,
-          password: "Password1",
           name: "Created User",
           username: `created_${suffix}`,
           roles: ["RIDER"],
@@ -531,9 +536,10 @@ describe("Admin Routes", () => {
       expect(res.body.data.email).toBe(email);
       expect(res.body.data.roles).toContain("RIDER");
 
-      // Side effect: user actually exists with a credential account.
+      // Side effect: user actually exists and has no password credential.
       const dbUser = await prisma.user.findUnique({ where: { email } });
       expect(dbUser).not.toBeNull();
+      expect(await prisma.account.count({ where: { userId: dbUser!.id, password: { not: null } } })).toBe(0);
     });
 
     it("returns 409 when email already exists", async () => {
@@ -545,7 +551,6 @@ describe("Admin Routes", () => {
         .set("Authorization", `Bearer ${admin.token}`)
         .send({
           email: existing.user.email,
-          password: "Password1",
           name: "Dupe User",
         });
 
@@ -553,21 +558,12 @@ describe("Admin Routes", () => {
       expect(res.body.success).toBe(false);
     });
 
-    it("returns 400 for a weak password", async () => {
-      const admin = await createAdminUser();
-      const res = await request(app)
-        .post("/api/admin/users")
-        .set("Authorization", `Bearer ${admin.token}`)
-        .send({ email: "weak@example.com", password: "weak" });
-      expect(res.status).toBe(400);
-    });
-
     it("returns 400 for an invalid email", async () => {
       const admin = await createAdminUser();
       const res = await request(app)
         .post("/api/admin/users")
         .set("Authorization", `Bearer ${admin.token}`)
-        .send({ email: "not-an-email", password: "Password1" });
+        .send({ email: "not-an-email" });
       expect(res.status).toBe(400);
     });
 
@@ -579,7 +575,6 @@ describe("Admin Routes", () => {
         .set("Authorization", `Bearer ${coAdmin.token}`)
         .send({
           email: `priv_${suffix}@example.com`,
-          password: "Password1",
           roles: ["ADMIN"],
         });
       expect(res.status).toBe(403);
@@ -588,7 +583,7 @@ describe("Admin Routes", () => {
     it("rejects unauthenticated with 401 (valid body so it reaches auth)", async () => {
       const res = await request(app)
         .post("/api/admin/users")
-        .send({ email: "x@example.com", password: "Password1" });
+        .send({ email: "x@example.com" });
       expect(res.status).toBe(401);
     });
   });

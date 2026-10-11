@@ -146,6 +146,34 @@ describe("Phone OTP Verification (APITxT)", () => {
       expect(updatedUser?.phoneVerified).toBe(true);
       expect(updatedUser?.phone).toBe(normalizedPhone);
     });
+
+    it("never transfers a phone factor owned by another user", async () => {
+      const original = await createTestUser({ phone: "919876512455", phoneVerified: true });
+      const current = await createTestUser({ phone: null, phoneVerified: false });
+      const phone = "+919876512455";
+
+      const sendRes = await request(app)
+        .post("/api/account/phone/send-otp")
+        .set("Authorization", `Bearer ${current.token}`)
+        .send({ phone });
+      expect(sendRes.status).toBe(200);
+
+      const record = await prisma.verification.findFirst({
+        where: { identifier: "phone:919876512455" },
+      });
+      const otp = record?.value.split(":")[0] || "";
+      const verifyRes = await request(app)
+        .post("/api/account/phone/verify-otp")
+        .set("Authorization", `Bearer ${current.token}`)
+        .send({ phone, otp });
+
+      expect(verifyRes.status).toBe(409);
+      expect(verifyRes.body.error.code).toBe("FACTOR_ALREADY_LINKED");
+      await expect(prisma.user.findUniqueOrThrow({ where: { id: original.user.id } }))
+        .resolves.toMatchObject({ phone: "919876512455", phoneVerified: true });
+      await expect(prisma.user.findUniqueOrThrow({ where: { id: current.user.id } }))
+        .resolves.toMatchObject({ phone: null, phoneVerified: false });
+    });
   });
 
   describe("Public Phone Auth Endpoints", () => {

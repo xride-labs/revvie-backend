@@ -1,7 +1,7 @@
 import { betterAuth } from "better-auth";
 import { prismaAdapter } from "better-auth/adapters/prisma";
 import { createAuthMiddleware, APIError } from "better-auth/api";
-import { bearer, emailOTP, magicLink } from "better-auth/plugins";
+import { bearer, emailOTP } from "better-auth/plugins";
 import { passkey } from "@better-auth/passkey";
 import prisma from "../lib/prisma.js";
 import {
@@ -12,10 +12,8 @@ import type { Request, Response, NextFunction } from "express";
 import { fromNodeHeaders } from "better-auth/node";
 import {
   sendOtpEmail,
-  sendResetPasswordEmail,
   sendVerificationEmail,
   sendWelcomeEmail,
-  sendMagicLinkEmail,
 } from "../lib/mailer.js";
 
 // User roles enum (sync with Prisma schema)
@@ -116,40 +114,6 @@ export const auth = betterAuth({
     "https://api.revvie.xride-labs.in",
   ],
 
-  // Enable email and password authentication
-  emailAndPassword: {
-    enabled: true,
-    minPasswordLength: 8,
-    requireEmailVerification:
-      process.env.AUTH_REQUIRE_EMAIL_VERIFICATION === "true" ||
-      process.env.NODE_ENV === "production",
-    sendResetPassword: async ({ user, url }) => {
-      if (!user.email) {
-        return;
-      }
-
-      if (process.env.NODE_ENV === "development") {
-        console.log(`\n==================================`);
-        console.log(`[DEV] Password Reset Link for ${user.email} → ${url}`);
-        console.log(`==================================\n`);
-      }
-
-      try {
-        const sent = await sendResetPasswordEmail({
-          to: user.email,
-          name: user.name,
-          resetUrl: url,
-        });
-
-        if (!sent) {
-          console.warn(`[AUTH] Failed to send reset password email to ${user.email}`);
-        }
-      } catch (error) {
-        console.error(`[AUTH] sendResetPassword error for ${user.email}:`, error);
-      }
-    },
-  },
-
   // Email verification configuration
   emailVerification: {
     sendVerificationEmail: async ({ user, url }) => {
@@ -171,7 +135,7 @@ export const auth = betterAuth({
   },
 
   // Reject throwaway email domains on every email-bearing endpoint, before
-  // Better Auth runs any signup / sign-in / OTP / magic-link / reset logic.
+  // Better Auth runs any signup / sign-in / OTP logic.
   // This covers login too (per product requirement: disposables can neither
   // register nor sign in). OAuth signups that never hit these paths are
   // caught separately by databaseHooks.user.create.before below.
@@ -182,11 +146,7 @@ export const auth = betterAuth({
         path.startsWith("/sign-up") ||
         path.startsWith("/sign-in") ||
         path.startsWith("/email-otp") ||
-        path.startsWith("/magic-link") ||
         path.startsWith("/verify-email") ||
-        path.startsWith("/request-password") ||
-        path.startsWith("/forget-password") ||
-        path.startsWith("/reset-password") ||
         path.startsWith("/change-email");
       if (!isEmailFlow) return;
       const email = (ctx.body as { email?: unknown } | null | undefined)?.email;
@@ -272,6 +232,16 @@ export const auth = betterAuth({
       clientId: process.env.AUTH_GOOGLE_ID || "",
       clientSecret: process.env.AUTH_GOOGLE_SECRET || "",
     },
+    // Apple is enabled only when server credentials are configured.
+    ...(process.env.AUTH_APPLE_ID && process.env.AUTH_APPLE_SECRET
+      ? {
+          apple: {
+            clientId: process.env.AUTH_APPLE_ID,
+            clientSecret: process.env.AUTH_APPLE_SECRET,
+            appBundleIdentifier: process.env.AUTH_APPLE_BUNDLE_ID,
+          },
+        }
+      : {}),
   },
 
   // Session configuration
@@ -373,36 +343,6 @@ export const auth = betterAuth({
           isNewUser: !existing,
         });
         if (!sent) throw new Error("Failed to send OTP email");
-      },
-    }),
-    magicLink({
-      sendMagicLink: async ({ email, url }) => {
-        if (process.env.NODE_ENV === "development") {
-          console.log(`\n==================================`);
-          console.log(`[DEV] Magic Link for ${email} → ${url}`);
-          console.log(`==================================\n`);
-          return;
-        }
-
-        const parsedUrl = new URL(url);
-        const token = parsedUrl.searchParams.get("token");
-        // Use a generic deep link that the Expo app will intercept
-        const deepLinkUrl = `revvie://magic-link?token=${token}`;
-
-        const existing = await prisma.user
-          .findFirst({
-            where: { email },
-            select: { id: true, name: true },
-          })
-          .catch(() => null);
-
-        const sent = await sendMagicLinkEmail({
-          to: email,
-          name: existing?.name,
-          magicLinkUrl: deepLinkUrl,
-        });
-
-        if (!sent) throw new Error("Failed to send Magic Link email");
       },
     }),
     passkey({

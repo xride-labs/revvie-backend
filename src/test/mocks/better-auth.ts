@@ -30,8 +30,9 @@ function readAuthHeader(headers: AnyHeaders): string | undefined {
   return Array.isArray(value) ? value[0] : value;
 }
 
-export function betterAuth() {
+export function betterAuth(options: Record<string, unknown> = {}) {
   return {
+    options,
     api: {
       getSession: async ({ headers }: { headers?: AnyHeaders } = {}) => {
         const authHeader = readAuthHeader(headers);

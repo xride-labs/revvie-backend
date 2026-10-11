@@ -9,6 +9,7 @@
  */
 
 import request from "supertest";
+import { auth } from "../../config/auth.js";
 import { app } from "../../server";
 import {
   createTestUser,
@@ -85,7 +86,7 @@ describe("Account Routes", () => {
     });
   });
 
-  describe("POST /api/account/change-password", () => {
+  describe("retired password endpoints", () => {
     it("should change password successfully", async () => {
       const { token } = await createTestUser();
 
@@ -97,8 +98,8 @@ describe("Account Routes", () => {
           newPassword: "NewPassword456",
         });
 
-      expect(res.status).toBe(200);
-      expect(res.body.success).toBe(true);
+      expect(res.status).toBe(410);
+      expect(res.body.error.code).toBe("PASSWORD_AUTH_RETIRED");
     });
 
     it("should return 400 with a weak new password", async () => {
@@ -112,7 +113,8 @@ describe("Account Routes", () => {
           newPassword: "weak", // < 8 chars, fails changePasswordSchema
         });
 
-      expect(res.status).toBe(400);
+      expect(res.status).toBe(410);
+      expect(res.body.error.code).toBe("PASSWORD_AUTH_RETIRED");
     });
 
     it("should return 401 when not authenticated", async () => {
@@ -121,7 +123,14 @@ describe("Account Routes", () => {
         newPassword: "NewPass123",
       });
 
-      expect(res.status).toBe(401);
+      expect(res.status).toBe(410);
+      expect(res.body.error.code).toBe("PASSWORD_AUTH_RETIRED");
+    });
+
+    it("does not configure email-password or magic-link authentication", () => {
+      const options = (auth as any).options;
+      expect(options.emailAndPassword?.enabled).not.toBe(true);
+      expect(options.plugins.some((plugin: { id?: string }) => plugin.id === "magic-link")).toBe(false);
     });
   });
 

@@ -7,7 +7,6 @@ import {
   EventStatus,
 } from "@prisma/client";
 import { PrismaPg } from "@prisma/adapter-pg";
-import { hashPassword } from "better-auth/crypto";
 import mongoose, { connectMongoDB } from "../src/lib/mongodb.js";
 import {
   Conversation,
@@ -231,7 +230,7 @@ async function ensureGoogleAdminSeedUser(): Promise<void> {
   console.log(`✅ Ensured ${GOOGLE_ADMIN_EMAIL} has SUPER_ADMIN + ADMIN + RIDER roles`);
 }
 
-async function seedProductionAdmin(passwordHash: string): Promise<void> {
+async function seedProductionAdmin(): Promise<void> {
   console.log("🌱 Running production-safe seed (no destructive deletes)...");
 
   const adminUser = await prisma.user.upsert({
@@ -299,37 +298,16 @@ async function seedProductionAdmin(passwordHash: string): Promise<void> {
     skipDuplicates: true,
   });
 
-  await prisma.account.upsert({
-    where: {
-      providerId_accountId: {
-        providerId: "credential",
-        accountId: adminUser.id,
-      },
-    },
-    update: {
-      userId: adminUser.id,
-      password: passwordHash,
-    },
-    create: {
-      userId: adminUser.id,
-      providerId: "credential",
-      accountId: adminUser.id,
-      password: passwordHash,
-    },
-  });
-
   console.log("✅ Production seed completed safely");
-  console.log(`🔑 ${PRIMARY_ADMIN_EMAIL} / password123  -> ADMIN + CLUB_OWNER`);
+  console.log(`🔑 ${PRIMARY_ADMIN_EMAIL} -> ADMIN + CLUB_OWNER (OTP/Passkey Auth)`);
   console.log(`🟢 ${GOOGLE_ADMIN_EMAIL} -> ADMIN + RIDER`);
 }
 
 async function main() {
   console.log(`🌱 Starting ${IS_PROD ? "PRODUCTION" : "DEVELOPMENT"} seed...`);
 
-  const hashedPassword = await hashPassword("password123");
-
   if (IS_PROD) {
-    await seedProductionAdmin(hashedPassword);
+    await seedProductionAdmin();
     return;
   }
 
@@ -397,7 +375,6 @@ async function main() {
   async function createUserWithRoles(
     data: Parameters<typeof prisma.user.create>[0]["data"],
     roles: string[],
-    passwordHash: string,
   ) {
     const user = await prisma.user.create({ data });
     for (const roleSlug of roles) {
@@ -406,14 +383,6 @@ async function main() {
         data: { userId: user.id, roleId },
       });
     }
-    await prisma.account.create({
-      data: {
-        userId: user.id,
-        providerId: "credential",
-        accountId: user.id,
-        password: passwordHash,
-      },
-    });
     return user;
   }
 
@@ -447,7 +416,6 @@ async function main() {
       subscriptionTier: "PRO",
     },
     ["ADMIN", "CLUB_OWNER"],
-    hashedPassword,
   );
   console.log("✅ Created admin user:", adminUser.email);
 
@@ -654,7 +622,6 @@ async function main() {
         subscriptionTier: roles.includes("CLUB_OWNER") ? "PRO" : "FREE",
       },
       roles,
-      hashedPassword,
     );
     createdUsers.push(user);
   }
@@ -2372,7 +2339,6 @@ async function main() {
         subscriptionTier: "PRO",
       },
       ["BRAND_OWNER"],
-      hashedPassword,
     );
 
     const bp = await prisma.businessProfile.create({
@@ -2547,6 +2513,161 @@ async function main() {
   }
   console.log(`✅ Created ${adCount} ad campaigns, ${discountCount} discounts, ${brandPostCount} brand posts`);
 
+  // ── Curated Itineraries ─────────────────────────────────────────
+  console.log("🗺️  Seeding Curated Motorcycle Itineraries & Waypoints...");
+  const samplePlaces = await prisma.place.findMany({ take: 30 });
+  const placeIds = samplePlaces.map((p) => p.id);
+
+  const curatedData = [
+    {
+      title: "Navadurgas: 9 Legendary Hill Forts Circuit",
+      subtitle: "The definitive Bangalore fortress odyssey across rugged monolithic hill tops",
+      description: "Scale all nine historic defensive forts commissioned by Kempe Gowda and fortified by Tipu Sultan, weaving through granite trails, monolithic climbs, and forest switchbacks.",
+      slug: "navadurgas-hill-forts-circuit",
+      theme: "NAVADURGAS" as const,
+      durationTier: "FULL_DAY" as const,
+      corridor: "TUMKUR_ROAD",
+      region: "KARNATAKA",
+      distanceKm: 285,
+      durationMinutes: 480,
+      difficulty: "Advanced",
+      rating: 4.9,
+      ratingCount: 38,
+      startLocationName: "Yeshwanthpur Toll Plaza, Bangalore",
+      startLat: 13.0285,
+      startLng: 77.5402,
+      endLocationName: "Nandi Upachar, Bangalore Outskirts",
+      endLat: 13.3768,
+      endLng: 77.7121,
+      heroImage: "https://images.unsplash.com/photo-1558981806-ec527fa84c39?w=1200",
+      galleryImages: [
+        "https://images.unsplash.com/photo-1568772585407-9361f9bf3a87?w=1200",
+        "https://images.unsplash.com/photo-1515238152791-8216bfdf89a7?w=1200",
+      ],
+      highlights: [
+        "Climb the massive monolith of Savandurga",
+        "Twisty hairpins to Devarayanadurga summit",
+        "Panoramic views from Makalidurga reservoir",
+        "Stone fortification ramparts at Hutridurga",
+      ],
+      isPublished: true,
+    },
+    {
+      title: "Western Ghats Monsoon & Coastal Highway Loop",
+      subtitle: "From lush coffee plantations to rainforest hairpins and Arabian Sea coastlines",
+      description: "Carve through the misty rainforests of Charmadi and Agumbe, descend into coastal Karnataka, and cruise alongside the Arabian Sea on the Maravanthe beach highway.",
+      slug: "western-ghats-coastal-loop",
+      theme: "COASTAL_DRIVES" as const,
+      durationTier: "WEEKEND" as const,
+      corridor: "HASSAN_ROAD",
+      region: "KARNATAKA",
+      distanceKm: 580,
+      durationMinutes: 840,
+      difficulty: "Intermediate",
+      rating: 5.0,
+      ratingCount: 64,
+      startLocationName: "Nelamangala Highway Junction",
+      startLat: 13.0978,
+      startLng: 77.3912,
+      endLocationName: "Gokarna Cliff Overlook",
+      endLat: 14.5479,
+      endLng: 74.3188,
+      heroImage: "https://images.unsplash.com/photo-1568772585407-9361f9bf3a87?w=1200",
+      galleryImages: [
+        "https://images.unsplash.com/photo-1449426468159-d96dbf08f19f?w=1200",
+        "https://images.unsplash.com/photo-1580310614729-ccd69652491d?w=1200",
+      ],
+      highlights: [
+        "14 Hairpins of Agumbe Sunset Point",
+        "Breathtaking vistas of Charmadi Ghat valley",
+        "Maravanthe Sea-on-one-side, River-on-the-other drive",
+      ],
+      isPublished: true,
+    },
+    {
+      title: "Cauvery & Arkavathi Waterbodies Trail",
+      subtitle: "Rivers, reservoirs, canyons and waterfalls under 120km",
+      description: "A fast-paced half-day canyon and reservoir run touching Manchanabele Dam, Chunchi Falls, Sangama, and the dramatic gorge at Mekedatu.",
+      slug: "cauvery-arkavathi-waterbodies-trail",
+      theme: "WATERBODIES" as const,
+      durationTier: "HALF_DAY" as const,
+      corridor: "KANAKAPURA_ROAD",
+      region: "KARNATAKA",
+      distanceKm: 145,
+      durationMinutes: 240,
+      difficulty: "Beginner",
+      rating: 4.8,
+      ratingCount: 22,
+      startLocationName: "Kanakapura Metro Base",
+      startLat: 12.8752,
+      startLng: 77.5451,
+      endLocationName: "Mekedatu Gorge Point",
+      endLat: 12.2618,
+      endLng: 77.4475,
+      heroImage: "https://images.unsplash.com/photo-1515238152791-8216bfdf89a7?w=1200",
+      galleryImages: [
+        "https://images.unsplash.com/photo-1558981806-ec527fa84c39?w=1200",
+      ],
+      highlights: [
+        "Scenic reservoir curves around Manchanabele",
+        "Gushing canyon rapids at Sangama",
+        "Rustic village breakfast stops on Kanakapura road",
+      ],
+      isPublished: true,
+    },
+  ];
+
+  for (let ci = 0; ci < curatedData.length; ci++) {
+    const c = curatedData[ci];
+    const itinerary = await prisma.curatedItinerary.upsert({
+      where: { slug: c.slug },
+      update: c,
+      create: c,
+    });
+
+    await prisma.curatedItineraryWaypoint.deleteMany({
+      where: { itineraryId: itinerary.id },
+    });
+
+    const waypointsToInsert = [
+      {
+        itineraryId: itinerary.id,
+        order: 1,
+        name: c.startLocationName,
+        latitude: c.startLat,
+        longitude: c.startLng,
+        stopType: "START",
+        placeId: placeIds[ci % placeIds.length] || null,
+        notes: "Muster point and rider safety briefing",
+      },
+      {
+        itineraryId: itinerary.id,
+        order: 2,
+        name: `${c.title} Viewpoint Apex`,
+        latitude: (c.startLat + (c.endLat || c.startLat)) / 2 + 0.05,
+        longitude: (c.startLng + (c.endLng || c.startLng)) / 2 - 0.03,
+        stopType: "VIEWPOINT",
+        placeId: placeIds[(ci + 5) % placeIds.length] || null,
+        notes: "Scenic photo checkpoint & hydration break",
+      },
+      {
+        itineraryId: itinerary.id,
+        order: 3,
+        name: c.endLocationName || "Destination",
+        latitude: c.endLat || c.startLat,
+        longitude: c.endLng || c.startLng,
+        stopType: "END",
+        placeId: placeIds[(ci + 10) % placeIds.length] || null,
+        notes: "Final destination, lunch and debrief",
+      },
+    ];
+
+    await prisma.curatedItineraryWaypoint.createMany({
+      data: waypointsToInsert,
+    });
+  }
+  console.log(`✅ Created ${curatedData.length} curated itineraries with waypoints`);
+
   console.log("\n🎉 Development seed completed!");
   console.log("\n📊 Summary:");
   console.log(
@@ -2560,8 +2681,8 @@ async function main() {
   console.log(`   - Friend Groups: ${friendGroups.length}`);
   console.log(`   - Reports: ${reportData.length}`);
   console.log(`   - Brands: ${brandProfiles.length}`);
-  console.log("\n🔑 Credentials (password: password123):");
-  console.log("   admin@revvie.com      → ADMIN + CLUB_OWNER");
+  console.log("\n🔑 Seed Users (Phone OTP / Passkey / Google OAuth — Passwords Removed):");
+  console.log("   admin@revvie.in       → ADMIN + CLUB_OWNER");
   for (const u of devUsers)
     console.log(`   ${u.email.padEnd(24)} → ${u.roles.join(", ")}`);
 }

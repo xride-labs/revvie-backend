@@ -10,11 +10,9 @@ import {
   buildVerificationTemplate,
   buildOtpTemplate,
   buildWelcomeOtpTemplate,
-  buildResetPasswordTemplate,
   buildRideJoinRequestTemplate,
   buildClubJoinTemplate,
   buildAlertTemplate,
-  buildMagicLinkTemplate,
 } from "./emailTemplates.js";
 
 type Builder = {
@@ -45,11 +43,6 @@ const BUILDERS: Builder[] = [
     params: { otp: "654321" },
   },
   {
-    name: "resetPassword",
-    fn: buildResetPasswordTemplate,
-    params: { name: "Ada", resetUrl: "https://app.revvie.test/reset?t=1" },
-  },
-  {
     name: "rideJoinRequest",
     fn: buildRideJoinRequestTemplate,
     params: {
@@ -71,11 +64,6 @@ const BUILDERS: Builder[] = [
     name: "alert",
     fn: buildAlertTemplate,
     params: { subject: "Ride starting soon", message: "Helmet on!" },
-  },
-  {
-    name: "magicLink",
-    fn: buildMagicLinkTemplate,
-    params: { name: "Ada", magicLinkUrl: "https://app.revvie.test/ml?t=ok" },
   },
 ];
 
@@ -124,7 +112,7 @@ describe("template builders — structural contract", () => {
       expect(() => b.fn(anonymousParams)).not.toThrow();
       const tpl = b.fn(anonymousParams);
       // Only templates that greet by name guarantee the anonymous greeting.
-      if ("name" in b.params && b.name !== "magicLink") {
+      if ("name" in b.params) {
         expect(tpl.html.toLowerCase()).toContain("hi there");
       }
     },
@@ -148,19 +136,6 @@ describe("template builders — dynamic content embedding", () => {
   it("verification embeds the verify URL", () => {
     const url = "https://app.revvie.test/verify?t=abc123";
     const tpl = buildVerificationTemplate({ name: "Ada", verifyUrl: url });
-    expect(tpl.html).toContain(url);
-  });
-
-  it("reset password embeds the reset URL", () => {
-    const url = "https://app.revvie.test/reset?t=xyz";
-    const tpl = buildResetPasswordTemplate({ name: null, resetUrl: url });
-    expect(tpl.html).toContain(url);
-    expect(tpl.text).toContain(url);
-  });
-
-  it("magic link embeds the deep-link URL", () => {
-    const url = "revvie://magic-link?token=tok123";
-    const tpl = buildMagicLinkTemplate({ magicLinkUrl: url });
     expect(tpl.html).toContain(url);
   });
 

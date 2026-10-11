@@ -3,11 +3,9 @@ import {
   buildClubJoinTemplate,
   buildOtpTemplate,
   buildWelcomeOtpTemplate,
-  buildResetPasswordTemplate,
   buildRideJoinRequestTemplate,
   buildVerificationTemplate,
   buildWelcomeTemplate,
-  buildMagicLinkTemplate,
 } from "./emailTemplates.js";
 import { getBrandingConfig } from "../services/branding/branding.service.js";
 
@@ -296,34 +294,6 @@ export async function sendAlertEmail(params: {
   });
 }
 
-export async function sendResetPasswordEmail(params: {
-  to: string;
-  name?: string | null;
-  resetUrl: string;
-}): Promise<boolean> {
-  if (process.env.NODE_ENV === "development") {
-    console.log(`\n==================================`);
-    console.log(`[DEV] Password Reset Link for ${params.to} → ${params.resetUrl}`);
-    console.log(`==================================\n`);
-  }
-
-  const branding = await getBrandingConfig().catch(() => undefined);
-  const template = buildResetPasswordTemplate({
-    name: params.name,
-    resetUrl: params.resetUrl,
-    branding,
-  });
-
-  return sendEmail({
-    to: params.to,
-    toName: normalizeName(params.name),
-    subject: template.subject,
-    text: template.text,
-    html: template.html,
-    tags: template.tags,
-  });
-}
-
 export async function sendOtpEmail(params: {
   to: string;
   otp: string;
@@ -368,24 +338,3 @@ export async function sendWelcomeEmail(params: {
   });
 }
 
-export async function sendMagicLinkEmail(params: {
-  to: string;
-  name?: string | null;
-  magicLinkUrl: string;
-}): Promise<boolean> {
-  const branding = await getBrandingConfig().catch(() => undefined);
-  const template = buildMagicLinkTemplate({
-    name: params.name,
-    magicLinkUrl: params.magicLinkUrl,
-    branding,
-  });
-
-  return sendEmail({
-    to: params.to,
-    toName: normalizeName(params.name),
-    subject: template.subject,
-    text: template.text,
-    html: template.html,
-    tags: template.tags,
-  });
-}

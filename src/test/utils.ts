@@ -255,7 +255,7 @@ export async function createAdminUser(userData?: Partial<any>) {
       data: {
         name: "Admin",
         slug: "admin",
-        scope: "PLATFORM",
+        scope: "GLOBAL",
         isSystem: true,
       },
     });

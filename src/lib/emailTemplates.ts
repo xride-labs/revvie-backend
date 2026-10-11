@@ -706,47 +706,6 @@ export function buildWelcomeOtpTemplate(params: {
   };
 }
 
-export function buildResetPasswordTemplate(params: {
-  name?: string | null;
-  resetUrl: string;
-  branding?: BrandingConfig;
-}): EmailTemplate {
-  const firstName = getFirstName(params.name);
-  const greeting = firstName ? `Hi ${firstName},` : "Hi Rider,";
-
-  const html = buildHtml({
-    preheader: "Reset your Revvie account password.",
-    heading: "Reset your password",
-    greeting,
-    intro:
-      "We received a request to reset the password for your Revvie account. Click the button below to choose a new password. This link is valid for 1 hour.",
-    ctaLabel: "Set New Password",
-    ctaUrl: params.resetUrl,
-    headerBadge: params.branding?.emailHeaderBadge || "PASSWORD RESET",
-    branding: params.branding,
-    legal:
-      "If you did not request a password reset, you can safely ignore this email. Your current credentials remain secure.",
-  });
-
-  const text = buildText({
-    greeting,
-    heading: "Reset your password",
-    intro:
-      "We received a request to reset the password for your Revvie account. Click the link below to choose a new password.",
-    ctaLabel: "Set New Password",
-    ctaUrl: params.resetUrl,
-    legal:
-      "If you did not request a password reset, you can safely ignore this email.",
-  });
-
-  return {
-    subject: "Reset your Revvie password",
-    html,
-    text,
-    tags: ["reset-password"],
-  };
-}
-
 export function buildRideJoinRequestTemplate(params: {
   rideTitle: string;
   requesterName: string;
@@ -859,45 +818,6 @@ export function buildAlertTemplate(params: {
     html,
     text,
     tags: ["alert"],
-  };
-}
-
-export function buildMagicLinkTemplate(params: {
-  name?: string | null;
-  magicLinkUrl: string;
-  branding?: BrandingConfig;
-}): EmailTemplate {
-  const firstName = getFirstName(params.name);
-  const greeting = firstName ? `Hi ${escapeHtml(firstName)},` : "Welcome back Rider,";
-
-  const html = buildHtml({
-    preheader: "Your magic link to sign in to Revvie.",
-    heading: "Sign in to Revvie",
-    greeting,
-    intro:
-      "Click the button below to instantly sign in to your Revvie account. This secure one-click link is valid for 10 minutes and can only be used once.",
-    ctaLabel: "Sign In Instantly",
-    ctaUrl: params.magicLinkUrl,
-    headerBadge: params.branding?.emailHeaderBadge || "INSTANT ACCESS",
-    branding: params.branding,
-    outro: "If you did not request this sign-in link, you can safely ignore this email.",
-  });
-
-  const text = buildText({
-    greeting,
-    heading: "Sign in to Revvie",
-    intro:
-      "Click the link below to instantly sign in to your account. This link is valid for 10 minutes and can only be used once.",
-    ctaLabel: "Sign In Instantly",
-    ctaUrl: params.magicLinkUrl,
-    outro: "If you did not request this link, you can safely ignore this email.",
-  });
-
-  return {
-    subject: "Sign in to Revvie — One-Click Link",
-    html,
-    text,
-    tags: ["magic-link"],
   };
 }
 

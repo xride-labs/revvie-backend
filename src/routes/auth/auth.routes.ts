@@ -15,6 +15,7 @@ import {
   verifyOtpSchema,
 } from "../../validators/schemas.js";
 import { z } from "zod";
+import { recordSecurityEvent } from "../../lib/securityEvents.js";
 import crypto from "crypto";
 import { invalidatePushPrefCache } from "../../lib/notifications.js";
 import {
@@ -24,32 +25,19 @@ import {
 
 const router = Router();
 
+// Password authentication has been retired; answer every legacy caller
+// (authenticated or not) with a deterministic, documented response.
+const retiredPasswordHandler = (_req: Request, res: Response) =>
+  ApiResponse.error(
+    res,
+    "Password authentication has been retired. Sign in with an email or phone code, Google, Apple, or a passkey.",
+    410,
+    "PASSWORD_AUTH_RETIRED",
+  );
+
 // Suppress verbose auth logs in production (these contain emails and user IDs)
 const devLog: typeof console.log =
   process.env.NODE_ENV === "production" ? () => {} : console.log;
-
-// Change password schema (local to this file)
-const changePasswordSchema = z.object({
-  currentPassword: z.string().min(1, "Current password is required"),
-  newPassword: z
-    .string()
-    .min(8, "New password must be at least 8 characters")
-    .regex(/[A-Z]/, "Password must contain at least one uppercase letter")
-    .regex(/[a-z]/, "Password must contain at least one lowercase letter")
-    .regex(/[0-9]/, "Password must contain at least one number"),
-});
-
-// For accounts with no credential (password) yet - OTP-only, Google-only,
-// Apple-only signups - there is no "current password" to verify, so this is
-// deliberately a separate schema/endpoint from changePasswordSchema above.
-const setPasswordSchema = z.object({
-  newPassword: z
-    .string()
-    .min(8, "New password must be at least 8 characters")
-    .regex(/[A-Z]/, "Password must contain at least one uppercase letter")
-    .regex(/[a-z]/, "Password must contain at least one lowercase letter")
-    .regex(/[0-9]/, "Password must contain at least one number"),
-});
 
 // Emergency contact schemas — used by GET/POST/PATCH/DELETE under
 // /api/account/emergency-contacts. Phone is the only hard requirement so
@@ -350,51 +338,27 @@ router.post(
     try {
       const result = await validatePhoneOtp(phone, otp);
 
-      // Check if another account already has this phone verified
+      // A verified phone belongs to exactly one rider. Never move it.
       const existingUser = await prisma.user.findFirst({
         where: {
           phone: result.normalizedPhone,
           id: { not: userId },
         },
-        include: {
-          _count: {
-            select: {
-              bikes: true,
-              createdRides: true,
-              rideParticipations: true,
-            },
-          },
-        },
+        select: { id: true },
       });
 
       if (existingUser) {
-        devLog("[AUTH] Phone verified via OTP belongs to another account, transferring phone", {
-          previousUserId: existingUser.id,
-          targetUserId: userId,
-          phone: result.normalizedPhone,
+        await recordSecurityEvent({
+          type: "FACTOR_LINK_REJECTED",
+          userId,
+          metadata: { channel: "PHONE" },
         });
-
-        const isPlaceholder =
-          !existingUser.email &&
-          (existingUser._count?.bikes ?? 0) === 0 &&
-          (existingUser._count?.createdRides ?? 0) === 0;
-
-        if (isPlaceholder) {
-          // Reassign any saved locations to current user
-          await prisma.savedLocation.updateMany({
-            where: { userId: existingUser.id },
-            data: { userId },
-          });
-          // Delete placeholder sessions and user
-          await prisma.session.deleteMany({ where: { userId: existingUser.id } });
-          await prisma.user.delete({ where: { id: existingUser.id } });
-        } else {
-          // Detach phone from previous account so current user can claim it
-          await prisma.user.update({
-            where: { id: existingUser.id },
-            data: { phone: null, phoneVerified: false },
-          });
-        }
+        return ApiResponse.error(
+          res,
+          "This phone number is already linked to another account. Use account recovery if you lost access to it.",
+          409,
+          "FACTOR_ALREADY_LINKED",
+        );
       }
 
       const updatedUser = await prisma.user.update({
@@ -412,9 +376,10 @@ router.post(
         },
       });
 
-      devLog("[AUTH] Phone verified successfully", {
+      await recordSecurityEvent({
+        type: "FACTOR_LINKED",
         userId,
-        phone: result.normalizedPhone,
+        metadata: { channel: "PHONE" },
       });
 
       ApiResponse.success(
@@ -528,50 +493,17 @@ router.post(
           );
         }
 
-        // Check if the other user is just an empty duplicate/placeholder
-        const otherUser = existingAccount.user;
-        const isOtherEmpty =
-          otherUser &&
-          (otherUser._count?.bikes ?? 0) === 0 &&
-          (otherUser._count?.createdRides ?? 0) === 0 &&
-          (otherUser._count?.rideParticipations ?? 0) === 0;
-
-        if (isOtherEmpty) {
-          devLog("[AUTH] Migrating Google account from duplicate user to current user", {
-            fromUserId: otherUser.id,
-            toUserId: userId,
-            googleSub: payload.sub,
-          });
-
-          // Move any saved locations
-          await prisma.savedLocation.updateMany({
-            where: { userId: otherUser.id },
-            data: { userId },
-          });
-
-          // Reassign account
-          await prisma.account.update({
-            where: { id: existingAccount.id },
-            data: { userId },
-          });
-
-          // Delete duplicate user sessions
-          await prisma.session.deleteMany({
-            where: { userId: otherUser.id },
-          });
-
-          // Delete duplicate user
-          await prisma.user.delete({
-            where: { id: otherUser.id },
-          });
-        } else {
-          return ApiResponse.error(
-            res,
-            `This Google account is already linked to another active Revvie profile (${otherUser?.email || otherUser?.name || "another account"}).`,
-            409,
-            ErrorCode.CONFLICT,
-          );
-        }
+        await recordSecurityEvent({
+          type: "FACTOR_LINK_REJECTED",
+          userId,
+          metadata: { channel: "OAUTH", provider: "google" },
+        });
+        return ApiResponse.error(
+          res,
+          "This Google account is already linked to another Revvie profile. Use account recovery if you lost access to it.",
+          409,
+          "FACTOR_ALREADY_LINKED",
+        );
       } else {
         // Link Google account to current user
         await prisma.account.create({
@@ -582,6 +514,11 @@ router.post(
             issuer: "local:oauth:google",
             idToken,
           },
+        });
+        await recordSecurityEvent({
+          type: "FACTOR_LINKED",
+          userId,
+          metadata: { channel: "OAUTH", provider: "google" },
         });
       }
 
@@ -670,44 +607,31 @@ router.post(
     const userId = session.user.id;
     const normalizedEmail = email.trim().toLowerCase();
 
-    // Check if another account has this email
+    // An email belongs to exactly one rider. Never move or delete the owner.
     const existing = await prisma.user.findUnique({
       where: { email: normalizedEmail },
-      include: {
-        _count: {
-          select: {
-            bikes: true,
-            createdRides: true,
-          },
-        },
-      },
+      select: { id: true },
     });
 
     if (existing && existing.id !== userId) {
-      const isEmpty =
-        !existing.phone &&
-        (existing._count?.bikes ?? 0) === 0 &&
-        (existing._count?.createdRides ?? 0) === 0;
-
-      if (isEmpty) {
-        await prisma.session.deleteMany({ where: { userId: existing.id } });
-        await prisma.account.deleteMany({ where: { userId: existing.id } });
-        await prisma.user.delete({ where: { id: existing.id } });
-      } else {
-        return ApiResponse.error(
-          res,
-          "This email is already associated with another Revvie account.",
-          409,
-          ErrorCode.CONFLICT,
-        );
-      }
+      await recordSecurityEvent({
+        type: "FACTOR_LINK_REJECTED",
+        userId,
+        metadata: { channel: "EMAIL" },
+      });
+      return ApiResponse.error(
+        res,
+        "This email is already linked to another account. Use account recovery if you lost access to it.",
+        409,
+        "FACTOR_ALREADY_LINKED",
+      );
     }
 
     const updatedUser = await prisma.user.update({
       where: { id: userId },
       data: {
         email: normalizedEmail,
-        emailVerified: true,
+        emailVerified: false,
       },
       select: {
         id: true,
@@ -809,11 +733,6 @@ router.get(
     }
 
     const roles = user.userRoles?.map((r) => r.roleRecord.slug.toUpperCase()) ?? [];
-    const credentialAccount = await prisma.account.findFirst({
-      where: { userId: user.id, providerId: "credential" },
-      select: { password: true },
-    });
-    const hasPassword = !!credentialAccount?.password;
     const subscription = await getCurrentBillingSubscription(user.id);
     const xpPoints = user.xpPoints ?? 0;
     const nextLevelXp = (user.level + 1) * 250;
@@ -830,7 +749,6 @@ router.get(
       name: user.name,
       email: user.email,
       onboardingCompleted: user.onboardingCompleted,
-      hasPassword,
       dob: user.dob,
       emailVerified: user.emailVerified,
       phoneVerified: user.phoneVerified,
@@ -1126,155 +1044,32 @@ router.patch(
  * @swagger
  * /api/account/change-password:
  *   post:
- *     summary: Change user password
- *     description: Updates the password for the authenticated user.
+ *     summary: Retired - password authentication no longer exists
  *     tags: [Auth]
- *     security:
- *       - cookieAuth: []
- *     requestBody:
- *       required: true
- *       content:
- *         application/json:
- *           schema:
- *             type: object
- *             required:
- *               - currentPassword
- *               - newPassword
- *             properties:
- *               currentPassword:
- *                 type: string
- *                 format: password
- *               newPassword:
- *                 type: string
- *                 format: password
+ *     deprecated: true
  *     responses:
- *       200:
- *         description: Password changed successfully
- *       400:
- *         $ref: '#/components/responses/BadRequest'
- *       401:
- *         $ref: '#/components/responses/Unauthorized'
+ *       410:
+ *         description: PASSWORD_AUTH_RETIRED
  */
 router.post(
   "/change-password",
-  requireAuth,
-  validateBody(changePasswordSchema),
-  asyncHandler(async (req: Request, res: Response) => {
-    const session = (req as any).session;
-    const { currentPassword, newPassword } = req.body;
-    devLog("[AUTH] POST /change-password", { userId: session.user.id });
-
-    try {
-      // Use Better Auth's built-in changePassword API
-      // It verifies the current password and hashes the new one correctly
-      await auth.api.changePassword({
-        headers: fromNodeHeaders(req.headers),
-        body: {
-          currentPassword,
-          newPassword,
-          revokeOtherSessions: false,
-        },
-      });
-
-      devLog("[AUTH] POST /change-password - Password updated", {
-        userId: session.user.id,
-      });
-
-      ApiResponse.success(res, null, "Password changed successfully");
-    } catch (error: any) {
-      console.warn("[AUTH] POST /change-password - Failed", {
-        userId: session.user.id,
-        error: error.message,
-      });
-      return ApiResponse.error(
-        res,
-        error.body?.message || "Current password is incorrect",
-        400,
-        ErrorCode.INVALID_CREDENTIALS,
-      );
-    }
-  }),
+  retiredPasswordHandler,
 );
 
 /**
  * @swagger
  * /api/account/set-password:
  *   post:
- *     summary: Set a password for an account that doesn't have one yet
- *     description: |
- *       For accounts created via email OTP, Google, or Apple sign-in, which
- *       never have a credential (password) account. Does not require a
- *       current password, unlike /change-password. Fails with 400 if the
- *       account already has a password - use /change-password instead.
+ *     summary: Retired - password authentication no longer exists
  *     tags: [Auth]
- *     security:
- *       - cookieAuth: []
- *     requestBody:
- *       required: true
- *       content:
- *         application/json:
- *           schema:
- *             type: object
- *             required:
- *               - newPassword
- *             properties:
- *               newPassword:
- *                 type: string
- *                 format: password
+ *     deprecated: true
  *     responses:
- *       200:
- *         description: Password set successfully
- *       400:
- *         description: Account already has a password
- *       401:
- *         $ref: '#/components/responses/Unauthorized'
+ *       410:
+ *         description: PASSWORD_AUTH_RETIRED
  */
 router.post(
   "/set-password",
-  requireAuth,
-  validateBody(setPasswordSchema),
-  asyncHandler(async (req: Request, res: Response) => {
-    const session = (req as any).session;
-    const { newPassword } = req.body;
-    devLog("[AUTH] POST /set-password", { userId: session.user.id });
-
-    const existing = await prisma.account.findFirst({
-      where: { userId: session.user.id, providerId: "credential" },
-      select: { id: true, password: true },
-    });
-    if (existing?.password) {
-      return ApiResponse.error(
-        res,
-        "This account already has a password. Use change password instead.",
-        400,
-        ErrorCode.VALIDATION_ERROR,
-      );
-    }
-
-    try {
-      await auth.api.setPassword({
-        headers: fromNodeHeaders(req.headers),
-        body: { newPassword },
-      });
-
-      devLog("[AUTH] POST /set-password - Password set", {
-        userId: session.user.id,
-      });
-
-      ApiResponse.success(res, null, "Password set successfully");
-    } catch (error: any) {
-      console.warn("[AUTH] POST /set-password - Failed", {
-        userId: session.user.id,
-        error: error.message,
-      });
-      return ApiResponse.error(
-        res,
-        error.body?.message || "Couldn't set password",
-        400,
-        ErrorCode.VALIDATION_ERROR,
-      );
-    }
-  }),
+  retiredPasswordHandler,
 );
 
 // Returns the current session enriched with DB-sourced roles.

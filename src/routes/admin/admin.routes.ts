@@ -1,7 +1,6 @@
 import { Router, Request, Response } from "express";
 import { z } from "zod";
 import prisma from "../../lib/prisma.js";
-import bcrypt from "bcryptjs";
 import { requireAuth } from "../../config/auth.js";
 import { ApiResponse, ErrorCode } from "../../lib/utils/apiResponse.js";
 import {
@@ -738,7 +737,6 @@ router.post(
   asyncHandler(async (req: Request, res: Response) => {
     const {
       email,
-      password,
       name,
       username,
       phone,
@@ -777,7 +775,13 @@ router.post(
       );
     }
 
-    const hashedPassword = await bcrypt.hash(password, 10);
+    const requestedSlugs = (
+      roles && roles.length > 0 ? roles : [UserRole.RIDER]
+    ).map((role: string) => role.toLowerCase());
+    const roleRecords = await prisma.role.findMany({
+      where: { slug: { in: requestedSlugs }, scope: "GLOBAL" },
+      select: { id: true },
+    });
 
     const user = await prisma.user.create({
       data: {
@@ -791,17 +795,7 @@ router.post(
         emailVerified: emailVerified ?? false,
         phoneVerified: phoneVerified ?? false,
         userRoles: {
-          create:
-            roles && roles.length > 0
-              ? roles.map((role: UserRole) => ({ role }))
-              : [{ role: UserRole.RIDER }],
-        },
-        accounts: {
-          create: {
-            providerId: "credential",
-            accountId: email,
-            password: hashedPassword,
-          },
+          create: roleRecords.map((roleRecord) => ({ roleId: roleRecord.id })),
         },
       },
       select: {

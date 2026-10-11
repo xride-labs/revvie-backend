@@ -1,30 +1,10 @@
 import {
-  registerSchema,
   createReportSchema,
   updateReportSchema,
   weeklyActivityQuerySchema,
 } from "./schemas.js";
 
 describe("validators/schemas", () => {
-  it("validates register payload", () => {
-    const parsed = registerSchema.parse({
-      email: "qa@example.com",
-      password: "SecurePass1",
-      name: "QA User",
-    });
-
-    expect(parsed.email).toBe("qa@example.com");
-  });
-
-  it("rejects weak passwords", () => {
-    expect(() =>
-      registerSchema.parse({
-        email: "qa@example.com",
-        password: "weak",
-      }),
-    ).toThrow();
-  });
-
   it("validates report payloads", () => {
     const report = createReportSchema.parse({
       type: "post",
