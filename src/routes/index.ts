@@ -24,4 +24,5 @@ export { default as weatherRoutes } from "./weather/weather.routes.js";
 export { default as analyticsRoutes } from "./analytics/analytics.routes.js";
 export { default as tenantRoutes } from "./tenant/tenant.routes.js";
 export { default as curatedRoutes } from "./curated/curated.routes.js";
+export { aiRouter } from "./ai/ai.routes.js";
 

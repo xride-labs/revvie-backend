@@ -42,6 +42,7 @@ import {
   analyticsRoutes,
   tenantRoutes,
   curatedRoutes,
+  aiRouter,
 } from "./routes/index.js";
 import { metricsMiddleware, metricsHandler } from "./lib/metrics.js";
 import {
@@ -306,6 +307,7 @@ app.use("/api/analytics", analyticsRoutes);
 app.use("/api/tenant", tenantRoutes);
 app.use("/api/curated-itineraries", curatedRoutes);
 app.use("/api/curated-places", curatedRoutes);
+app.use("/api/ai", aiRouter);
 
 
 // Base URL welcome page
