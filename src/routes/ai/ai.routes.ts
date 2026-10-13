@@ -19,6 +19,19 @@ const aiRateLimiter = rateLimit({
   message: { error: "Too many AI requests. Please slow down and try again shortly." },
 });
 
+/**
+ * @swagger
+ * /api/ai/credits:
+ *   get:
+ *     tags: [AI]
+ *     summary: Remaining daily AI co-pilot credits for the signed-in rider
+ *     security: [{ bearerAuth: [] }]
+ *     responses:
+ *       200:
+ *         description: Credits used, remaining and the daily limit
+ *       401:
+ *         description: Not signed in
+ */
 // GET /api/ai/credits — check remaining daily credits
 aiRouter.get("/credits", requireAuth, async (req: Request, res: Response) => {
   const userId = (req as any).user?.id;
@@ -33,6 +46,37 @@ aiRouter.get("/credits", requireAuth, async (req: Request, res: Response) => {
   });
 });
 
+/**
+ * @swagger
+ * /api/ai/chat:
+ *   post:
+ *     tags: [AI]
+ *     summary: Send a message to the Revvie co-pilot
+ *     description: Runs one assistant turn. The model can search rides, create a ride, read the rider's profile and garage, and look up bike specs. Costs one daily credit, refunded if the model call fails.
+ *     security: [{ bearerAuth: [] }]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [message]
+ *             properties:
+ *               message: { type: string, maxLength: 2000 }
+ *               history:
+ *                 type: array
+ *                 description: Up to 10 previous user/assistant turns. System and tool turns are ignored.
+ *                 items:
+ *                   type: object
+ *                   properties:
+ *                     role: { type: string, enum: [user, assistant] }
+ *                     content: { type: string }
+ *     responses:
+ *       200:
+ *         description: Assistant reply, the tools it ran, and the remaining credits
+ *       429:
+ *         description: Rate limit or daily credits exhausted
+ */
 // POST /api/ai/chat — run agent turn with credit deduction
 aiRouter.post("/chat", aiRateLimiter, requireAuth, async (req: Request, res: Response) => {
   const { message, history } = req.body ?? {};
@@ -89,6 +133,21 @@ function mcpAuthorized(req: Request): boolean {
   return a.length === b.length && timingSafeEqual(a, b);
 }
 
+/**
+ * @swagger
+ * /api/ai/mcp/sse:
+ *   get:
+ *     tags: [AI]
+ *     summary: Model Context Protocol server (SSE) for external MCP clients
+ *     description: Disabled unless MCP_API_KEY and MCP_SERVICE_USER_ID are configured. Send the key in the x-api-key header. Tools act as the configured service user.
+ *     parameters:
+ *       - { name: x-api-key, in: header, required: true, schema: { type: string } }
+ *     responses:
+ *       200:
+ *         description: text/event-stream
+ *       401:
+ *         description: Missing or wrong key
+ */
 aiRouter.get("/mcp/sse", async (req: Request, res: Response) => {
   if (!mcpAuthorized(req)) {
     return res.status(401).json({ error: "Unauthorized MCP connection." });
